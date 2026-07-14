@@ -2,6 +2,8 @@ import os
 import uuid
 import hashlib
 import re
+import subprocess
+import numpy as np
 import aiofiles
 from datetime import datetime
 import fitz
@@ -75,7 +77,8 @@ async def extract_text(file_path: str, source_type: str, filename: str) -> tuple
         text, extra = await extract_from_pdf(file_path)
         metadata.update(extra)
     elif source_type == "image":
-        text = await extract_from_image(file_path)
+        text, extra = await extract_from_image(file_path)
+        metadata.update(extra)
     elif source_type == "audio":
         text, extra = await extract_from_audio(file_path)
         metadata.update(extra)
@@ -105,30 +108,149 @@ async def extract_from_pdf(file_path: str) -> tuple[str, dict]:
     return "\n\n".join(text_parts), {"pages": page_count}
 
 
-async def extract_from_image(file_path: str) -> str:
-    image = Image.open(file_path)
-    text = pytesseract.image_to_string(image)
-    return text
+async def extract_from_image(file_path: str) -> tuple[str, dict]:
+    ocr_text = _ocr_image(file_path)
+    caption = await _describe_image(file_path)
+
+    parts = []
+    if ocr_text.strip():
+        parts.append(f"[OCR Text]\n{ocr_text}")
+    if caption.strip():
+        parts.append(f"[Image Description]\n{caption}")
+
+    return "\n\n".join(parts), {"ocr_text": ocr_text.strip(), "caption": caption.strip()}
+
+
+def _ocr_image(file_path: str) -> str:
+    try:
+        image = Image.open(file_path)
+        return pytesseract.image_to_string(image)
+    except Exception:
+        return ""
+
+
+async def _describe_image(file_path: str) -> str:
+    import base64
+    import json
+    import httpx
+
+    try:
+        with open(file_path, "rb") as f:
+            image_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{settings.ollama_url}/api/generate",
+                json={
+                    "model": settings.vision_model,
+                    "prompt": "Describe this image in detail. What do you see?",
+                    "images": [image_base64],
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+            return response.json().get("response", "")
+    except Exception as e:
+        print(f"Vision model failed: {e}")
+        return ""
+
+
+_whisper_model = None
+
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        try:
+            _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+        except Exception:
+            _whisper_model = WhisperModel("base", device="cpu", compute_type="float32")
+    return _whisper_model
+
+
+def _convert_to_wav(input_path: str, output_path: str) -> bool:
+    try:
+        subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", input_path],
+            capture_output=True, timeout=10,
+        )
+    except Exception:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path,
+             "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+             "-f", "wav", output_path],
+            capture_output=True, timeout=30,
+        )
+        return result.returncode == 0 and os.path.exists(output_path)
+    except Exception:
+        return False
+
+
+def _get_audio_duration(wav_path: str) -> float:
+    try:
+        import soundfile as sf
+        data, sr = sf.read(wav_path)
+        return len(data) / sr if sr > 0 else 0
+    except Exception:
+        return 0
+
+
+def _is_silent(wav_path: str, threshold: float = 0.02) -> bool:
+    try:
+        import soundfile as sf
+        data, _ = sf.read(wav_path)
+        if len(data) == 0:
+            return True
+        rms = np.sqrt(np.mean(data ** 2))
+        return rms < threshold
+    except Exception:
+        return False
 
 
 async def extract_from_audio(file_path: str) -> tuple[str, dict]:
-    from faster_whisper import WhisperModel
+    wav_path = file_path + "_converted.wav"
+    try:
+        if not _convert_to_wav(file_path, wav_path):
+            return "", {"segments": [], "language": "en", "error": "ffmpeg conversion failed"}
 
-    model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, info = model.transcribe(file_path)
+        duration = _get_audio_duration(wav_path)
+        if duration < 0.5:
+            return "", {"segments": [], "language": "en", "duration": duration, "error": "too short"}
 
-    text_parts = []
-    segment_data = []
+        if _is_silent(wav_path):
+            return "", {"segments": [], "language": "en", "duration": duration, "error": "silent audio"}
 
-    for segment in segments:
-        text_parts.append(segment.text)
-        segment_data.append({
-            "start": round(segment.start, 2),
-            "end": round(segment.end, 2),
-            "text": segment.text.strip(),
-        })
+        model = _get_whisper_model()
+        segments, info = model.transcribe(wav_path)
 
-    return " ".join(text_parts), {"segments": segment_data, "language": info.language}
+        text_parts = []
+        segment_data = []
+
+        for segment in segments:
+            t = segment.text.strip()
+            if t:
+                text_parts.append(t)
+                segment_data.append({
+                    "start": round(segment.start, 2),
+                    "end": round(segment.end, 2),
+                    "text": t,
+                })
+
+        text = " ".join(text_parts)
+
+        if len(text.split()) <= 1 and duration > 1.0:
+            print(f"Whisper returned single-word result '{text}' for {duration:.1f}s audio — may be hallucination")
+            text = ""
+
+        return text, {"segments": segment_data, "language": info.language, "duration": duration}
+
+    finally:
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
 
 
 def compute_content_hash(text: str) -> str:
