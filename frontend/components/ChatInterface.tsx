@@ -6,22 +6,10 @@ import { Volume2, Square, Loader2, Bot, User, Globe, FileText, ImageIcon } from 
 import clsx from "clsx";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { ChatInput } from "./ChatInput";
+import { fileToBase64 } from "@/lib/api";
 import type { Message, Citation, ConversationMessage } from "@/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.split(",")[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
 
 interface ChatInterfaceProps {
   kbId: string;
