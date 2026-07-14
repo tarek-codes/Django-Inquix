@@ -39,6 +39,7 @@ services:
         echo "Pulling models..."
         ollama pull nomic-embed-text 2>/dev/null || true
         ollama pull qwen2.5:3b 2>/dev/null || true
+        ollama pull llava-phi3:3.8b 2>/dev/null || true
         echo "Models ready."
         wait
 
@@ -49,8 +50,12 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://inquix:inquix@db:5432/inquix
       OLLAMA_URL: http://ollama:11434
-      EMBEDDING_MODEL: nomic-embed-text
-      LLM_MODEL: qwen2.5:3b
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-jina}
+      JINA_API_KEY: ${JINA_API_KEY}
+      VISION_MODEL: ${VISION_MODEL:-llava-phi3:3.8b}
       UPLOAD_DIR: /data/uploads
     volumes:
       - ./backend/app:/app/app
