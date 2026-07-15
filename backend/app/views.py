@@ -427,4 +427,5 @@ async def synthesize_speech(request):
     if not audio:
         return JsonResponse({"detail": "TTS generation failed"}, status=500)
 
-    return HttpResponse(audio, content_type="audio/wav")
+    content_type = "audio/wav" if audio.startswith(b"RIFF") else "audio/mpeg"
+    return HttpResponse(audio, content_type=content_type)

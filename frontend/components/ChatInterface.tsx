@@ -329,17 +329,52 @@ function ChatMessage({
 }) {
   const isUser = message.role === "user";
   const [playing, setPlaying] = useState(false);
+  const [localAudioUrl, setLocalAudioUrl] = useState<string | null>(message.audioUrl || null);
+  const [loadingAudio, setLoadingAudio] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const handlePlayToggle = () => {
+  const handlePlayToggle = async () => {
     if (playing) {
       audioRef.current?.pause();
       setPlaying(false);
-    } else if (message.audioUrl) {
-      const audio = new Audio(message.audioUrl);
+      return;
+    }
+
+    const urlToPlay = localAudioUrl || message.audioUrl;
+    if (urlToPlay) {
+      const audio = new Audio(urlToPlay);
       audioRef.current = audio;
       audio.onended = () => setPlaying(false);
-      audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+      audio.play().then(() => setPlaying(true)).catch((e) => console.error("Audio playback failed", e));
+      return;
+    }
+
+    // Generate speech audio on demand if not present
+    if (!message.content.trim() || loadingAudio) return;
+
+    setLoadingAudio(true);
+    try {
+      const res = await fetch(`${API}/api/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: message.content }),
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        setLocalAudioUrl(url);
+
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => setPlaying(false);
+        audio.play().then(() => setPlaying(true)).catch((e) => console.error("Audio playback failed", e));
+      } else {
+        console.error("Failed to generate TTS");
+      }
+    } catch (err) {
+      console.error("Failed to generate TTS", err);
+    } finally {
+      setLoadingAudio(false);
     }
   };
 
@@ -403,15 +438,18 @@ function ChatMessage({
           <div className="flex items-center gap-3 mt-1.5 ml-1">
             <button
               onClick={handlePlayToggle}
-              className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-indigo-500 transition-colors"
+              disabled={loadingAudio}
+              className="flex items-center gap-1.5 text-[11px] text-gray-400 hover:text-indigo-600 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
               title={playing ? "Stop" : "Listen"}
             >
-              {playing ? (
+              {loadingAudio ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+              ) : playing ? (
                 <Square className="w-3.5 h-3.5" />
               ) : (
                 <Volume2 className="w-3.5 h-3.5" />
               )}
-              {message.audioUrl ? (playing ? "Stop" : "Listen") : "Listen"}
+              {loadingAudio ? "Generating audio..." : playing ? "Stop" : "Listen"}
             </button>
           </div>
         )}
