@@ -3,6 +3,30 @@ import httpx
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
 from app.config import settings
 
+def clean_markdown(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.split("\n")
+    cleaned_lines = []
+    skip_keywords = {
+        "jump to content", "main menu", "move to sidebar", "navigation", "search",
+        "interaction", "tools", "print/export", "in other projects", "languages",
+        "navigation search", "personal tools", "namespaces", "views", "more",
+        "about wikipedia", "disclaimers", "contact us", "privacy policy"
+    }
+    for line in lines:
+        line_lower = line.strip().lower()
+        if not line_lower:
+            cleaned_lines.append("")
+            continue
+        if any(kw in line_lower for kw in skip_keywords):
+            continue
+        cleaned_lines.append(line)
+    
+    import re
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
 
 async def _firecrawler_scrape(client: httpx.AsyncClient, url: str) -> str:
     if not settings.firecrawler_api_key:
@@ -106,7 +130,7 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
                 info = search_urls[i]
                 chunks.append({
                     "id": f"crawl-{i}",
-                    "content": markdown[:2000].strip(),
+                    "content": clean_markdown(markdown)[:16000].strip(),
                     "chunk_index": 0,
                     "metadata": {"url": info["url"], "title": info["title"]},
                     "filename": info["title"],
@@ -127,7 +151,7 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
             results = await crawler.arun_many(urls=urls, config=config)
             for i, result in enumerate(results):
                 if result and result.success and result.markdown:
-                    text = result.markdown[:2000].strip()
+                    text = clean_markdown(result.markdown)[:16000].strip()
                     if text:
                         info = search_urls[i]
                         chunks.append({
@@ -197,7 +221,7 @@ async def _duckduckgo_search(query: str, max_results: int) -> list[dict]:
             # Use scrape result if available, otherwise fall back to DDG snippet
             full_text = snippet
             if i < len(scrape_results) and scrape_results[i]:
-                full_text = scrape_results[i][:2000].strip()
+                full_text = clean_markdown(scrape_results[i])[:16000].strip()
 
             if full_text:
                 chunks.append({

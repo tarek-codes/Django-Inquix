@@ -12,36 +12,62 @@ from app.config import settings
 def build_messages(
     query: str, chunks: list[dict], chat_history: list[dict] | None = None,
     kb_documents: list[str] | None = None, images: list[str] | None = None,
+    is_local: bool = False,
 ) -> list[dict]:
     doc_chunks = [c for c in chunks if c.get("source_type") != "web"]
     web_chunks = [c for c in chunks if c.get("source_type") == "web"]
 
     context_parts = []
 
-    if doc_chunks:
-        context_parts.append("YOUR UPLOADED FILES:")
-        for i, c in enumerate(doc_chunks):
-            context_parts.append(
-                f"[{i + 1}] {c.get('filename', f'Document {i + 1}')}\n{c['content']}"
-            )
+    if is_local:
+        # Conciser chunks and simplified system message to keep local models from hallucinating
+        if doc_chunks:
+            context_parts.append("UPLOADED FILES:")
+            for i, c in enumerate(doc_chunks):
+                context_parts.append(
+                    f"{c.get('filename', f'Doc {i+1}')}:\n{c['content'][:4000]}"
+                )
+        if web_chunks:
+            context_parts.append("WEB SEARCH RESULTS:")
+            for i, c in enumerate(web_chunks):
+                context_parts.append(
+                    f"{c.get('filename', f'Web {i+1}')}:\n{c['content'][:4000]}"
+                )
+        context = "\n\n".join(context_parts)
 
-    if web_chunks:
-        context_parts.append("WEB SEARCH RESULTS:")
-        offset = len(doc_chunks)
-        for i, c in enumerate(web_chunks):
-            context_parts.append(
-                f"[{offset + i + 1}] {c.get('filename', f'Web {i + 1}')}\n{c['content']}"
-            )
+        rules = [
+            "Answer the query directly and naturally.",
+            "Use the provided CONTEXT to answer the question if it contains relevant details.",
+            "If the CONTEXT does not contain the answer, use your general knowledge.",
+            "Do NOT include any citations, bracketed numbers (like [1], [2]), or source URLs.",
+            "Never explain that the context is missing details or that you are using general knowledge."
+        ]
+    else:
+        # Standard detailed prompt for powerful cloud APIs
+        if doc_chunks:
+            context_parts.append("YOUR UPLOADED FILES:")
+            for i, c in enumerate(doc_chunks):
+                context_parts.append(
+                    f"[{i + 1}] {c.get('filename', f'Document {i + 1}')}\n{c['content']}"
+                )
 
-    context = "\n\n---\n\n".join(context_parts)
+        if web_chunks:
+            context_parts.append("WEB SEARCH RESULTS:")
+            offset = len(doc_chunks)
+            for i, c in enumerate(web_chunks):
+                context_parts.append(
+                    f"[{offset + i + 1}] {c.get('filename', f'Web {i + 1}')}\n{c['content']}"
+                )
 
-    rules = [
-        "Answer the query directly, naturally, and completely using the provided UPLOADED FILES and WEB SEARCH RESULTS as context.",
-        "If the answer is not in the UPLOADED FILES, answer using your own general knowledge and use the WEB SEARCH RESULTS to verify or supplement the facts.",
-        "Do NOT include any citations, numbers in brackets (like [1], [2]), or source URLs in your answer. Provide the actual answer directly.",
-        "Do NOT mention 'Based on the provided information', 'Based on my general knowledge', 'knowledge base', or similar prefaces.",
-        "Do NOT complain that the files or web search results are missing details; simply answer directly and naturally without mentioning context files or search results.",
-    ]
+        context = "\n\n---\n\n".join(context_parts)
+
+        rules = [
+            "Answer the user's query directly and naturally. Use the provided UPLOADED FILES and WEB SEARCH RESULTS to answer if they contain relevant details.",
+            "You are NOT restricted to the provided context. If the context does not contain the answer, or if you already know it, use your own pre-trained general knowledge to provide a complete, accurate answer.",
+            "Never complain about missing information in the context or search results. Simply answer the question directly using your general knowledge.",
+            "Do NOT include any citations, bracketed numbers (like [1], [2]), or source URLs in your response.",
+            "Do NOT mention 'Based on the provided information', 'Based on my general knowledge', 'According to the context', or similar phrases.",
+        ]
 
     active_docs_str = ", ".join(kb_documents) if kb_documents else "None"
 
@@ -440,7 +466,7 @@ async def _generate_ollama(
     query: str, chunks: list[dict], chat_history: list[dict] | None = None,
     kb_documents: list[str] | None = None, images: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
-    messages = build_messages(query, chunks, chat_history, kb_documents)
+    messages = build_messages(query, chunks, chat_history, kb_documents, is_local=True)
 
     system_msg = ""
     for m in messages:

@@ -292,10 +292,13 @@ async def chat_view(request, kb_id):
             threshold = settings.similarity_threshold
             local_chunks = await retrieve_chunks(query, kb_id)
             
-            # Keep only chunks that actually meet the similarity threshold
+            # Keep only chunks that meet the similarity threshold
             relevant_local_chunks = [c for c in local_chunks if c.get("similarity", 0) >= threshold]
 
-            if relevant_local_chunks:
+            # Trigger web search if there are no highly relevant local matches (similarity >= 0.58)
+            has_strong_match = any(c.get("similarity", 0) >= 0.58 for c in relevant_local_chunks)
+
+            if has_strong_match:
                 web_chunks = []
             else:
                 web_chunks = await search_web(query, max_results=2)
