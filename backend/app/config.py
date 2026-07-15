@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://inquix:inquix@localhost:5432/inquix"
+    database_url: str = "postgresql://inquix:inquix@localhost:5432/inquix"
     ollama_url: str = "http://localhost:11434"
 
     llm_provider: str = "ollama"

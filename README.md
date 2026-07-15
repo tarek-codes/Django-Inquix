@@ -5,7 +5,7 @@ Multi-modal RAG platform — upload text, PDF, images, and audio documents, then
 ## Architecture
 
 ```
-Next.js Frontend (port 3000)  →  FastAPI Backend (port 8000)  →  Ollama (LLM + Embeddings)
+Next.js Frontend (port 3000)  →  Django Backend (port 8000)   →  Ollama (LLM + Embeddings)
                                                               →  PostgreSQL + pgvector
 ```
 

@@ -1,6 +1,6 @@
-from sqlalchemy import select
-from app.database import async_session
-from app.models import Chunk, Document
+from asgiref.sync import sync_to_async
+from pgvector.django import CosineDistance
+from app.models import Chunk
 from app.services.embedding import get_embedding
 from app.config import settings
 
@@ -12,32 +12,29 @@ async def retrieve_chunks(query: str, kb_id: str, top_k: int | None = None) -> l
     threshold = settings.similarity_threshold
     query_embedding = await get_embedding(query)
 
-    async with async_session() as session:
-        result = await session.execute(
-            select(
-                Chunk.id, Chunk.content, Chunk.chunk_index, Chunk.chunk_metadata,
-                Document.filename, Document.source_type,
-                (1 - Chunk.embedding.cosine_distance(query_embedding)).label("similarity"),
-            )
-            .join(Document, Chunk.document_id == Document.id)
-            .where(Chunk.kb_id == kb_id, Chunk.status == "active")
-            .order_by(Chunk.embedding.cosine_distance(query_embedding))
-            .limit(top_k * 2)
-        )
+    def _query_db():
+        chunks_qs = Chunk.objects.filter(kb_id=kb_id, status="active") \
+            .annotate(distance=CosineDistance('embedding', query_embedding)) \
+            .select_related('document') \
+            .order_by('distance')[:top_k * 2]
 
         chunks = []
-        for row in result:
-            similarity = row.similarity
-            if similarity is None or similarity < threshold:
+        for row in chunks_qs:
+            distance = row.distance
+            if distance is None:
+                continue
+            similarity = 1 - distance
+            if similarity < threshold:
                 continue
             chunks.append({
                 "id": str(row.id),
                 "content": row.content,
                 "chunk_index": row.chunk_index,
                 "metadata": row.chunk_metadata or {},
-                "filename": row.filename,
-                "source_type": row.source_type,
+                "filename": row.document.filename,
+                "source_type": row.document.source_type,
                 "similarity": round(similarity, 4),
             })
-
         return chunks[:top_k]
+
+    return await sync_to_async(_query_db)()
