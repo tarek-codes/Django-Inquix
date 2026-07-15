@@ -350,24 +350,24 @@ function ChatMessage({
   }, []);
 
   return (
-    <div className={clsx("flex gap-3 px-4 py-3 message-enter", isUser ? "justify-end" : "justify-start")}>
+    <div className={clsx("flex gap-4 px-4 py-4 message-enter", isUser ? "justify-end" : "justify-start")}>
       {!isUser && (
-        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
-          <Bot className="w-4 h-4 text-white" />
+        <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-indigo-600 flex items-center justify-center shadow-sm">
+          <Bot className="w-4.5 h-4.5 text-white" />
         </div>
       )}
 
-      <div className={clsx("max-w-[75%]", isUser && "flex flex-col items-end")}>
+      <div className={clsx("max-w-[78%]", isUser && "flex flex-col items-end")}>
         {!isUser && (
-          <p className="text-xs font-medium text-gray-500 mb-1 ml-0.5">Inquix</p>
+          <p className="text-[11px] font-semibold text-gray-400 mb-1.5 ml-0.5">Inquix</p>
         )}
 
         <div
           className={clsx(
-            "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+            "text-sm leading-relaxed",
             isUser
-              ? "bg-gray-900 text-white rounded-br-md"
-              : "bg-white text-gray-800 border border-gray-100 shadow-sm rounded-bl-md"
+              ? "bg-[#e3ecfc] text-gray-800 rounded-2xl px-4 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.01)] border border-indigo-100/50"
+              : "text-gray-800 py-0.5 font-normal"
           )}
         >
           {message.images && message.images.length > 0 && (
@@ -417,12 +417,12 @@ function ChatMessage({
         )}
 
         {!isUser && message.citations && message.citations.length > 0 && (
-          <div className="mt-2 ml-1">
+          <div className="mt-3.5">
             <div className="flex flex-wrap gap-1.5">
               {message.citations.slice(0, 6).map((cite, i) => (
                 <div
                   key={cite.id}
-                  className="flex items-center gap-1 px-2 py-1 bg-gray-50 border border-gray-200 rounded-md text-[10px] text-gray-500"
+                  className="flex items-center gap-1.5 px-2.5 py-1 bg-white border border-gray-200/80 rounded-full text-[10px] text-gray-500 shadow-[0_1px_2px_rgba(0,0,0,0.01)] hover:border-indigo-300 transition-colors"
                 >
                   {cite.source_type === "web" ? (
                     <Globe className="w-3 h-3 shrink-0" />

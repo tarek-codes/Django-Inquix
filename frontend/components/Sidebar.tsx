@@ -74,7 +74,7 @@ export function Sidebar({
 
       <aside
         className={clsx(
-          "fixed lg:static inset-y-0 left-0 z-30 flex flex-col bg-[#171717] text-white transition-all duration-300 ease-in-out",
+          "fixed lg:static inset-y-0 left-0 z-30 flex flex-col bg-[#18181b] text-white transition-all duration-300 ease-in-out border-r border-zinc-800/40",
           isOpen ? "w-[260px]" : "w-0 lg:w-0 overflow-hidden"
         )}
       >
@@ -82,14 +82,14 @@ export function Sidebar({
           <div className="flex items-center justify-between p-3 shrink-0">
             <button
               onClick={onNewChat}
-              className="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors w-full"
+              className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-lg transition-colors w-full border border-zinc-800"
             >
               <Plus className="w-4 h-4" />
               <span>New chat</span>
             </button>
             <button
               onClick={onToggle}
-              className="p-1.5 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors ml-1"
+              className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800/80 transition-colors ml-1"
             >
               <PanelLeftClose className="w-4 h-4" />
             </button>
@@ -110,16 +110,16 @@ export function Sidebar({
                   className={clsx(
                     "flex items-center gap-2.5 w-full px-3 py-2.5 text-sm rounded-lg text-left transition-colors group",
                     conv.id === activeConvId
-                      ? "bg-white/15 text-white"
-                      : "text-gray-400 hover:bg-white/10 hover:text-gray-200"
+                      ? "bg-zinc-850 bg-zinc-800 text-white"
+                      : "text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200"
                   )}
                 >
-                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  <MessageSquare className="w-4 h-4 shrink-0 text-zinc-500 group-hover:text-indigo-400 transition-colors" />
                   <span className="truncate flex-1">{conv.title || "Chat"}</span>
-                  <span className="text-[10px] text-gray-600 shrink-0">{formatDate(conv.created_at)}</span>
+                  <span className="text-[10px] text-zinc-600 shrink-0">{formatDate(conv.created_at)}</span>
                   <button
                     onClick={(e) => handleDelete(e, conv.id)}
-                    className="p-0.5 text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                    className="p-0.5 text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
@@ -128,12 +128,12 @@ export function Sidebar({
             )}
           </div>
 
-          <div className="p-3 border-t border-white/10 shrink-0">
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <div className="w-6 h-6 rounded-lg bg-indigo-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">
+          <div className="p-3 border-t border-zinc-800/60 shrink-0">
+            <div className="flex items-center gap-2.5 text-xs text-zinc-400">
+              <div className="w-6 h-6 rounded-lg bg-indigo-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0 shadow-md">
                 I
               </div>
-              <span className="truncate">{kbName}</span>
+              <span className="truncate font-semibold">{kbName}</span>
             </div>
           </div>
         </div>

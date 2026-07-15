@@ -36,14 +36,14 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f4f4f5] flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen bg-[#f8f9fc] flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-lg">
         <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 mb-5 shadow-lg shadow-indigo-200">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-600 mb-5 shadow-lg shadow-indigo-100">
             <Brain className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900">Inquix</h1>
-          <p className="text-sm text-gray-500 mt-1.5">Multi-modal RAG — upload documents and ask questions</p>
+          <h1 className="text-3xl font-extrabold text-gray-800 tracking-tight">Inquix</h1>
+          <p className="text-sm text-gray-400 mt-2 font-medium">Multi-modal RAG — Upload documents and ask questions</p>
         </div>
 
         {loading ? (

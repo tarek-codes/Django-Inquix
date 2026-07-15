@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload, Loader2, FileText } from "lucide-react";
+import { Plus, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface FileUploadProps {
@@ -11,68 +11,55 @@ interface FileUploadProps {
 
 export function FileUpload({ kbId, onUploadComplete }: FileUploadProps) {
   const [uploading, setUploading] = useState(false);
-  const [uploads, setUploads] = useState<{ name: string; status: "uploading" | "processing" | "done" | "error" }[]>([]);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
-      const newUploads = acceptedFiles.map((f) => ({ name: f.name, status: "uploading" as const }));
-      setUploads((prev) => [...prev, ...newUploads]);
-
-      for (let i = 0; i < acceptedFiles.length; i++) {
-        const file = acceptedFiles[i];
-        const idx = uploads.length + i;
-        setUploading(true);
-        try {
-          setUploads((prev) => prev.map((u, j) => (j === idx ? { ...u, status: "processing" } : u)));
+      if (acceptedFiles.length === 0) return;
+      setUploading(true);
+      
+      try {
+        for (const file of acceptedFiles) {
           await api.uploadDocument(kbId, file);
-          setUploads((prev) => prev.map((u, j) => (j === idx ? { ...u, status: "done" } : u)));
-        } catch {
-          setUploads((prev) => prev.map((u, j) => (j === idx ? { ...u, status: "error" } : u)));
         }
+      } catch (err) {
+        console.error("Upload failed", err);
+      } finally {
         setUploading(false);
+        onUploadComplete();
       }
-      onUploadComplete();
     },
-    [kbId, onUploadComplete, uploads.length]
+    [kbId, onUploadComplete]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, disabled: uploading });
 
   return (
-    <div className="space-y-2">
+    <div>
       <div
         {...getRootProps()}
-        className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-all
+        className={`border border-dashed rounded-xl p-4 text-center cursor-pointer transition-all duration-200
           ${isDragActive
-            ? "border-indigo-400 bg-indigo-50"
-            : "border-gray-300 hover:border-gray-400 hover:bg-gray-50"
+            ? "border-indigo-500 bg-indigo-50/50"
+            : "border-indigo-200 hover:border-indigo-400 bg-indigo-50/10 hover:bg-indigo-50/30"
           }
           ${uploading ? "opacity-50 pointer-events-none" : ""}`}
       >
         <input {...getInputProps()} />
         {uploading ? (
-          <div className="flex items-center justify-center gap-2 text-sm text-gray-500">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            Processing...
+          <div className="flex flex-col items-center justify-center gap-2 py-1.5 text-xs font-semibold text-indigo-600">
+            <Loader2 className="w-5 h-5 animate-spin shrink-0" />
+            <span>Analyzing document(s)...</span>
           </div>
         ) : (
-          <div className="flex flex-col items-center gap-1">
-            <Upload className="w-5 h-5 text-gray-400" />
-            <p className="text-xs text-gray-500">Drop files or click</p>
-            <p className="text-[10px] text-gray-400">PDF, TXT, images, audio</p>
+          <div className="flex flex-col items-center gap-1.5 py-1">
+            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
+              <Plus className="w-4.5 h-4.5" />
+            </div>
+            <p className="text-xs font-semibold text-indigo-700">Add source</p>
+            <p className="text-[10px] text-indigo-500">PDF, Word, TXT, CSV, MP3, Images</p>
           </div>
         )}
       </div>
-
-      {uploads.map((u, i) => (
-        <div key={i} className="flex items-center gap-2 px-2 py-1.5 bg-gray-100 rounded text-xs">
-          <FileText className="w-3 h-3 text-gray-400 shrink-0" />
-          <span className="truncate text-gray-700">{u.name}</span>
-          {u.status === "processing" && <Loader2 className="w-3 h-3 animate-spin text-indigo-500 ml-auto shrink-0" />}
-          {u.status === "done" && <span className="text-green-500 ml-auto shrink-0">Done</span>}
-          {u.status === "error" && <span className="text-red-500 ml-auto shrink-0">Failed</span>}
-        </div>
-      ))}
     </div>
   );
 }

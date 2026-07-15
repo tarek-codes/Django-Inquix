@@ -32,8 +32,7 @@ export function ChatInput({ onSend, onStop, disabled, onInputChange }: ChatInput
   const [transcribingAudio, setTranscribingAudio] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<any>(null);
   const [dragOver, setDragOver] = useState(false);
 
   const hasContent = input.trim().length > 0 || pendingFiles.length > 0;
@@ -141,46 +140,59 @@ export function ChatInput({ onSend, onStop, disabled, onInputChange }: ChatInput
     }
   };
 
-  const handleVoice = async () => {
-    if (recording) {
-      mediaRecorderRef.current?.stop();
+  const handleVoice = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser. Please use Chrome, Edge, Safari or Firefox.");
       return;
     }
+
+    if (recording) {
+      recognitionRef.current?.stop();
+      setRecording(false);
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
 
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        setRecording(false);
+      // Save baseline text already in input to avoid resetting user edits
+      const baseInput = input.trim() ? input.trim() + " " : "";
 
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        if (blob.size < 200) return;
+      recognition.onresult = (event: any) => {
+        let interimTranscript = "";
+        let finalTranscript = "";
 
-        setTranscribingAudio(true);
-        const formData = new FormData();
-        formData.append("file", blob, "recording.webm");
-        try {
-          const res = await fetch(`${API}/api/transcribe`, { method: "POST", body: formData });
-          if (!res.ok) return;
-          const data = await res.json();
-          if (data.text) setInput((prev) => (prev ? prev + " " + data.text : data.text));
-        } catch {
-        } finally {
-          setTranscribingAudio(false);
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
         }
+
+        setInput(baseInput + finalTranscript + interimTranscript);
       };
 
-      mediaRecorder.start();
+      recognition.onerror = (e: any) => {
+        console.error("Speech recognition error", e);
+        setRecording(false);
+      };
+
+      recognition.onend = () => {
+        setRecording(false);
+      };
+
+      recognition.start();
       setRecording(true);
-    } catch {
-      console.error("Microphone access denied");
+    } catch (err) {
+      console.error("Failed to start speech recognition", err);
+      setRecording(false);
     }
   };
 
@@ -203,27 +215,27 @@ export function ChatInput({ onSend, onStop, disabled, onInputChange }: ChatInput
 
   return (
     <div
-      className={`w-full max-w-3xl mx-auto px-4 pb-4 ${dragOver ? "opacity-80" : ""}`}
+      className={`w-full max-w-3xl mx-auto px-6 pb-6 pt-2 shrink-0 ${dragOver ? "opacity-80" : ""}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       {pendingFiles.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-2">
+        <div className="flex flex-wrap gap-2 mb-2.5">
           {pendingFiles.map((pf) => (
             <div
               key={pf.id}
               className={clsx(
-                "flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs",
+                "flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs shadow-[0_1px_2px_rgba(0,0,0,0.01)]",
                 pf.status === "error"
                   ? "bg-red-50 border-red-200 text-red-600"
                   : pf.status === "transcribing"
                   ? "bg-indigo-50 border-indigo-200 text-indigo-600"
-                  : "bg-gray-50 border-gray-200 text-gray-600"
+                  : "bg-white border-gray-200 text-gray-600"
               )}
             >
               {pf.file.type.startsWith("image/") && pf.preview ? (
-                <div className="relative w-8 h-8 rounded overflow-hidden shrink-0">
+                <div className="relative w-8 h-8 rounded-lg overflow-hidden shrink-0">
                   <img
                     src={pf.preview}
                     alt={pf.file.name}
@@ -231,18 +243,18 @@ export function ChatInput({ onSend, onStop, disabled, onInputChange }: ChatInput
                   />
                 </div>
               ) : pf.file.type.startsWith("audio/") ? (
-                <FileAudio className="w-3.5 h-3.5 shrink-0" />
+                <FileAudio className="w-3.5 h-3.5 shrink-0 text-purple-500" />
               ) : (
-                <FileText className="w-3.5 h-3.5 shrink-0" />
+                <FileText className="w-3.5 h-3.5 shrink-0 text-blue-500" />
               )}
-              <span className="truncate max-w-[120px]">{pf.file.name}</span>
-              {pf.status === "transcribing" && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
+              <span className="truncate max-w-[120px] font-medium">{pf.file.name}</span>
+              {pf.status === "transcribing" && <Loader2 className="w-3 h-3 animate-spin shrink-0 text-indigo-500" />}
               {pf.status === "error" && <span className="text-red-500">{pf.error}</span>}
               <button
                 onClick={() => removeFile(pf.id)}
-                className="p-0.5 hover:bg-black/10 rounded shrink-0"
+                className="p-0.5 hover:bg-black/5 rounded-md shrink-0 transition-colors"
               >
-                <X className="w-3 h-3" />
+                <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
               </button>
             </div>
           ))}
@@ -251,8 +263,8 @@ export function ChatInput({ onSend, onStop, disabled, onInputChange }: ChatInput
 
       <div
         className={clsx(
-          "flex items-end gap-1.5 bg-white border rounded-2xl px-3 py-2 shadow-sm transition-shadow",
-          disabled ? "opacity-60" : "focus-within:shadow-md focus-within:border-gray-300"
+          "flex items-end gap-1.5 bg-white border border-gray-200/80 rounded-2xl px-3.5 py-2.5 shadow-[0_4px_16px_rgba(0,0,0,0.03)] transition-all duration-200",
+          disabled ? "opacity-60" : "focus-within:shadow-[0_6px_24px_rgba(0,0,0,0.06)] focus-within:border-indigo-400"
         )}
       >
         <input
