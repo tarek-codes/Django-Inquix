@@ -31,7 +31,7 @@ class Document(models.Model):
     content_hash = models.CharField(max_length=64, null=True, blank=True)
     file_size = models.BigIntegerField(null=True, blank=True)
     mime_type = models.CharField(max_length=255, null=True, blank=True)
-    metadata_ = models.JSONField(default=dict, blank=True, db_column="metadata")
+    metadata = models.JSONField(default=dict, blank=True, db_column="metadata")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

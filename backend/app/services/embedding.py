@@ -3,13 +3,40 @@ from app.config import settings
 
 
 async def get_embedding(text: str) -> list[float]:
+    import hashlib
+    import json
+    from app.services.cache import get_cached_val, set_cached_val
+
     provider = settings.embed_provider
+    model = settings.embedding_model
+    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    cache_key = f"inquix:embedding:{provider}:{model}:{text_hash}"
+
+    try:
+        cached_val = await get_cached_val(cache_key)
+        if cached_val:
+            return json.loads(cached_val)
+    except Exception as e:
+        print(f"Error reading embedding cache: {e}")
+
     if provider == "jina" and settings.jina_api_key:
         try:
-            return await _embed_jina(text)
+            embedding = await _embed_jina(text)
         except Exception as e:
             print(f"Jina embedding failed, falling back to Ollama: {e}")
-    return await _embed_ollama(text)
+            embedding = await _embed_ollama(text)
+        else:
+            # Successfully got jina embedding, we will cache it
+            pass
+    else:
+        embedding = await _embed_ollama(text)
+
+    try:
+        await set_cached_val(cache_key, json.dumps(embedding))
+    except Exception as e:
+        print(f"Error saving embedding cache: {e}")
+
+    return embedding
 
 
 async def _embed_jina(text: str) -> list[float]:

@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     curl \
     espeak-ng \
+    antiword \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

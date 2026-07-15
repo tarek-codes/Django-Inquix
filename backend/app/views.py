@@ -158,7 +158,7 @@ async def list_or_create_doc(request, kb_id):
             status="processing",
             file_size=len(file_bytes),
             mime_type=file.content_type,
-            metadata_={"safe_filename": safe_filename},
+            metadata={"safe_filename": safe_filename},
         )
 
         try:
@@ -200,7 +200,7 @@ async def list_or_create_doc(request, kb_id):
 
         except Exception as e:
             doc.status = "failed"
-            doc.metadata_ = {**doc.metadata_, "error": str(e)}
+            doc.metadata = {**doc.metadata, "error": str(e)}
             await sync_to_async(doc.save)()
 
         return JsonResponse(serialize_doc(doc))
@@ -263,12 +263,6 @@ async def chat_view(request, kb_id):
             title=query[:100] if query else "New Chat"
         )
 
-    def _get_history(conv_id):
-        history = list(Message.objects.filter(conversation_id=conv_id).order_by('created_at')[:20])
-        return [{"role": m.role, "content": m.content} for m in history]
-
-    chat_history = await sync_to_async(_get_history)(conversation.id)
-
     user_msg = Message(
         conversation=conversation,
         role="user",
@@ -277,37 +271,45 @@ async def chat_view(request, kb_id):
     )
     await sync_to_async(user_msg.save)()
 
-    def _get_kb_documents():
-        return list(Document.objects.filter(kb=kb, status="ready").values_list('filename', flat=True))
-
-    kb_documents = await sync_to_async(_get_kb_documents)()
-
-    threshold = settings.similarity_threshold
-    local_chunks = await retrieve_chunks(query, kb_id)
-    has_relevant_docs = any(c.get("similarity", 0) >= threshold for c in local_chunks)
-
-    if has_relevant_docs:
-        web_chunks = []
-    else:
-        web_chunks = await search_web(query, max_results=2)
-
-    chunks = list(local_chunks)
-    if web_chunks:
-        offset = len(chunks)
-        for i, wc in enumerate(web_chunks):
-            wc["chunk_index"] = offset + i
-            chunks.append(wc)
-
-    cited_chunk_ids = [
-        c["id"] for c in chunks
-        if c.get("similarity", 1) >= threshold and c.get("id")
-    ]
-
     conv_id_str = str(conversation.id)
 
     async def stream_response():
         full_answer = ""
         try:
+            # Perform history, document, vector search, and web queries inside the generator
+            # to prevent blocking the initial EventSource connection startup.
+            def _get_history(conv_id):
+                history = list(Message.objects.filter(conversation_id=conv_id).order_by('created_at')[:20])
+                return [{"role": m.role, "content": m.content} for m in history]
+
+            chat_history = await sync_to_async(_get_history)(conversation.id)
+
+            def _get_kb_documents():
+                return list(Document.objects.filter(kb=kb, status="ready").values_list('filename', flat=True))
+
+            kb_documents = await sync_to_async(_get_kb_documents)()
+
+            threshold = settings.similarity_threshold
+            local_chunks = await retrieve_chunks(query, kb_id)
+            has_relevant_docs = any(c.get("similarity", 0) >= threshold for c in local_chunks)
+
+            if has_relevant_docs:
+                web_chunks = []
+            else:
+                web_chunks = await search_web(query, max_results=2)
+
+            chunks = list(local_chunks)
+            if web_chunks:
+                offset = len(chunks)
+                for i, wc in enumerate(web_chunks):
+                    wc["chunk_index"] = offset + i
+                    chunks.append(wc)
+
+            cited_chunk_ids = [
+                c["id"] for c in chunks
+                if c.get("similarity", 1) >= threshold and c.get("id")
+            ]
+
             async for token in generate_stream(query, chunks, chat_history, kb_documents, images=images):
                 full_answer += token
                 yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"

@@ -5,29 +5,56 @@ from app.config import settings
 
 
 async def search_web(query: str, max_results: int = 3) -> list[dict]:
+    import hashlib
+    import json
+    import re
+    from app.services.cache import get_cached_val, set_cached_val
+
+    # Normalize query to improve cache hit rates across variations (case, spacing, punctuation)
+    normalized = re.sub(r'[^\w\s]', '', query.strip().lower())
+    normalized = re.sub(r'\s+', ' ', normalized)
+    query_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    cache_key = f"inquix:web_search:{max_results}:{query_hash}"
+
     try:
-        result = await _crawl4ai_search(query, max_results)
-        if result:
-            return result
+        cached_val = await get_cached_val(cache_key)
+        if cached_val:
+            return json.loads(cached_val)
+    except Exception as e:
+        print(f"Error reading web search cache: {e}")
+
+    results = []
+    try:
+        results = await _crawl4ai_search(query, max_results)
     except Exception as e:
         print(f"Crawl4AI search failed: {e}")
 
-    try:
-        result = await _duckduckgo_search(query, max_results)
-        if result:
-            return result
-    except Exception as e:
-        print(f"DuckDuckGo search failed: {e}")
+    if not results:
+        try:
+            results = await _duckduckgo_search(query, max_results)
+        except Exception as e:
+            print(f"DuckDuckGo search failed: {e}")
 
-    try:
-        if settings.gemini_api_key:
-            result = await _gemini_search(query)
-            if result:
-                return result
-    except Exception as e:
-        print(f"Gemini search failed: {e}")
+    if not results:
+        try:
+            if settings.gemini_api_key:
+                results = await _gemini_search(query)
+        except Exception as e:
+            print(f"Gemini search failed: {e}")
 
-    return await _search_wikipedia_api(query, max_results)
+    if not results:
+        try:
+            results = await _search_wikipedia_api(query, max_results)
+        except Exception as e:
+            print(f"Wikipedia search failed: {e}")
+
+    if results:
+        try:
+            await set_cached_val(cache_key, json.dumps(results))
+        except Exception as e:
+            print(f"Error saving web search cache: {e}")
+
+    return results
 
 
 async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
@@ -45,7 +72,7 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
                 )
                 result = await crawler.arun(url=info["url"], config=config)
                 if result and result.markdown:
-                    text = result.markdown[:5000].strip()
+                    text = result.markdown[:2000].strip()
                     if text:
                         chunks.append({
                             "id": f"crawl-{i}",
@@ -94,7 +121,7 @@ async def _duckduckgo_search(query: str, max_results: int) -> list[dict]:
                     config = CrawlerRunConfig(cache_mode=CacheMode.ENABLED, word_count_threshold=10)
                     crawl_result = await crawler.arun(url=url, config=config)
                     if crawl_result and crawl_result.markdown:
-                        full_text = crawl_result.markdown[:5000].strip() or snippet
+                        full_text = crawl_result.markdown[:2000].strip() or snippet
                 except Exception:
                     pass
 
@@ -165,7 +192,7 @@ async def _gemini_search(query: str) -> list[dict]:
 
             chunks = [{
                 "id": "gemini-web-0",
-                "content": text[:5000],
+                "content": text[:2000],
                 "chunk_index": 0,
                 "metadata": {"source": "google_search", "chunks": metadata.get("groundingChunks", [])[:5]},
                 "filename": "Google Search",
@@ -228,7 +255,7 @@ async def _search_wikipedia_api(query: str, max_results: int) -> list[dict]:
                 if text.strip():
                     chunks.append({
                         "id": f"wiki-{r['pageid']}",
-                        "content": text[:5000],
+                        "content": text[:2000],
                         "chunk_index": 0,
                         "metadata": {"url": f"https://en.wikipedia.org/wiki/{r['title'].replace(' ', '_')}"},
                         "filename": f"Wikipedia: {r['title']}",

@@ -4,6 +4,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str = "postgresql://inquix:inquix@localhost:5432/inquix"
     ollama_url: str = "http://localhost:11434"
+    redis_url: str = "redis://localhost:6379/0"
+    redis_user_key: str = ""
+    redis_account_key: str = ""
 
     llm_provider: str = "ollama"
     llm_model: str = "qwen2.5:3b"
@@ -23,7 +26,7 @@ class Settings(BaseSettings):
     upload_dir: str = "/data/uploads"
     chunk_size: int = 500
     chunk_overlap: int = 50
-    top_k: int = 5
+    top_k: int = 3
     similarity_threshold: float = 0.45
 
     model_config = {"env_file": ".env", "extra": "ignore"}

@@ -15,9 +15,10 @@ interface ChatInterfaceProps {
   kbId: string;
   initialConvId?: string | null;
   onConversationCreated?: (convId: string) => void;
+  onUploadComplete?: () => void;
 }
 
-export function ChatInterface({ kbId, initialConvId, onConversationCreated }: ChatInterfaceProps) {
+export function ChatInterface({ kbId, initialConvId, onConversationCreated, onUploadComplete }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(!!initialConvId);
@@ -25,12 +26,18 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated }: Ch
   const [generatingTts, setGeneratingTts] = useState(false);
   const [processingImages, setProcessingImages] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
   useEffect(() => scrollToBottom(), [messages]);
+
+  const handleStop = () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  };
 
   useEffect(() => {
     if (!initialConvId) {
@@ -98,14 +105,27 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated }: Ch
   const handleSend = async (query: string, files?: File[]) => {
     if (loading) return;
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const imageFiles = files?.filter((f) => f.type.startsWith("image/")) ?? [];
+    const nonImageFiles = files?.filter((f) => !f.type.startsWith("image/")) ?? [];
     const imagePreviews = imageFiles.map((f) => URL.createObjectURL(f));
 
     setLoading(true);
 
+    let displayContent = query.trim();
+    if (!displayContent) {
+      if (nonImageFiles.length > 0) {
+        displayContent = `Uploaded document: ${nonImageFiles.map((f) => f.name).join(", ")}`;
+      } else if (imageFiles.length > 0) {
+        displayContent = "(Sent an image)";
+      }
+    }
+
     const userMsg: Message = {
       role: "user",
-      content: query || "(Sent an image)",
+      content: displayContent || "(Empty message)",
       images: imagePreviews.length > 0 ? imagePreviews : undefined,
     };
     setMessages((prev) => [...prev, userMsg]);
@@ -114,6 +134,38 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated }: Ch
     const assistantMsg: Message = { role: "assistant", content: "", citations: [] };
     setMessages((prev) => [...prev, assistantMsg]);
 
+    // Upload non-image files first to ingest them into the active Knowledge Base via RAG
+    if (nonImageFiles.length > 0) {
+      for (const file of nonImageFiles) {
+        try {
+          const formData = new FormData();
+          formData.append("file", file);
+          const uploadRes = await fetch(`${API}/api/kb/${kbId}/documents`, {
+            method: "POST",
+            body: formData,
+            signal: controller.signal,
+          });
+          if (!uploadRes.ok) {
+            const errText = await uploadRes.text().catch(() => "Upload failed");
+            throw new Error(`Failed to upload ${file.name}: ${errText}`);
+          }
+        } catch (err) {
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
+              content: `Error: ${err instanceof Error ? err.message : "Failed to process files"}`,
+            };
+            return updated;
+          });
+          setLoading(false);
+          return;
+        }
+      }
+      // Refresh documents list in the UI side-panel
+      onUploadComplete?.();
+    }
+
     let base64Images: string[] = [];
     if (imageFiles.length > 0) {
       setProcessingImages(true);
@@ -121,15 +173,25 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated }: Ch
       setProcessingImages(false);
     }
 
+    let finalQuery = query.trim();
+    if (!finalQuery) {
+      if (nonImageFiles.length > 0) {
+        finalQuery = `Summarize the attached document: ${nonImageFiles.map((f) => f.name).join(", ")}`;
+      } else if (imageFiles.length > 0) {
+        finalQuery = "Describe the attached image(s)";
+      }
+    }
+
     try {
       const response = await fetch(`${API}/api/kb/${kbId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: query || "Describe this image",
+          query: finalQuery || "Hello",
           conversation_id: convId,
           images: base64Images,
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -200,15 +262,20 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated }: Ch
         }
       }
     } catch (err) {
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          ...updated[updated.length - 1],
-          content: `Network error: ${err instanceof Error ? err.message : "Unknown error"}`,
-        };
-        return updated;
-      });
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // User stopped generation — keep partial content, no error message
+      } else {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = {
+            ...updated[updated.length - 1],
+            content: `Network error: ${err instanceof Error ? err.message : "Unknown error"}`,
+          };
+          return updated;
+        });
+      }
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
     }
   };
@@ -246,7 +313,7 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated }: Ch
         )}
       </div>
 
-      <ChatInput onSend={handleSend} disabled={loading} />
+      <ChatInput onSend={handleSend} onStop={handleStop} disabled={loading} />
     </div>
   );
 }

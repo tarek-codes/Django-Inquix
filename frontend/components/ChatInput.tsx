@@ -15,6 +15,7 @@ interface PendingFile {
 
 interface ChatInputProps {
   onSend: (text: string, files?: File[]) => void;
+  onStop?: () => void;
   disabled: boolean;
   onInputChange?: (text: string) => void;
 }
@@ -24,7 +25,7 @@ function nextFileId() {
   return `file_${++fileIdCounter}_${Date.now()}`;
 }
 
-export function ChatInput({ onSend, disabled, onInputChange }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled, onInputChange }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [recording, setRecording] = useState(false);
@@ -312,23 +313,29 @@ export function ChatInput({ onSend, disabled, onInputChange }: ChatInputProps) {
             )}
           </button>
 
-          <button
-            onClick={handleSend}
-            disabled={disabled || !hasContent}
-            className={clsx(
-              "p-1.5 rounded-lg transition-colors",
-              hasContent && !disabled
-                ? "bg-gray-900 text-white hover:bg-gray-800"
-                : "text-gray-400"
-            )}
-            title="Send message"
-          >
-            {disabled ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
+          {disabled ? (
+            <button
+              onClick={onStop}
+              className="p-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors"
+              title="Stop generating"
+            >
+              <Square className="w-5 h-5" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!hasContent}
+              className={clsx(
+                "p-1.5 rounded-lg transition-colors",
+                hasContent
+                  ? "bg-gray-900 text-white hover:bg-gray-800"
+                  : "text-gray-400"
+              )}
+              title="Send message"
+            >
               <Send className="w-5 h-5" />
-            )}
-          </button>
+            </button>
+          )}
         </div>
       </div>
 

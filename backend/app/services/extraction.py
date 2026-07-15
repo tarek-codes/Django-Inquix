@@ -23,6 +23,8 @@ SOURCE_MIME_MAP = {
     "text/csv": "text",
     "application/json": "text",
     "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "image/png": "image",
     "image/jpeg": "image",
     "image/jpg": "image",
@@ -76,6 +78,10 @@ async def extract_text(file_path: str, source_type: str, filename: str) -> tuple
     elif source_type == "pdf":
         text, extra = await extract_from_pdf(file_path)
         metadata.update(extra)
+    elif source_type == "docx":
+        text = await extract_from_docx(file_path)
+    elif source_type == "doc":
+        text = await extract_from_doc(file_path)
     elif source_type == "image":
         text, extra = await extract_from_image(file_path)
         metadata.update(extra)
@@ -255,3 +261,59 @@ async def extract_from_audio(file_path: str) -> tuple[str, dict]:
 
 def compute_content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def extract_from_docx(file_path: str) -> str:
+    import zipfile
+    import xml.etree.ElementTree as ET
+    try:
+        with zipfile.ZipFile(file_path) as docx:
+            namespace = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+            paragraph_tag = namespace + 'p'
+            text_tag = namespace + 't'
+            xml_content = docx.read('word/document.xml')
+            root = ET.fromstring(xml_content)
+            
+            paragraphs = []
+            for paragraph in root.iter(paragraph_tag):
+                texts = [node.text for node in paragraph.iter(text_tag) if node.text]
+                if texts:
+                    paragraphs.append("".join(texts))
+            
+            return "\n\n".join(paragraphs)
+    except Exception as e:
+        print(f"Error parsing .docx file: {e}")
+        return ""
+
+
+async def extract_from_doc(file_path: str) -> str:
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["antiword", file_path],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            return result.stdout
+        
+        # Fallback to crude byte-string extraction if antiword fails
+        return await _extract_doc_strings_fallback(file_path)
+    except Exception as e:
+        print(f"Error parsing .doc file via antiword: {e}")
+        return await _extract_doc_strings_fallback(file_path)
+
+
+async def _extract_doc_strings_fallback(file_path: str) -> str:
+    try:
+        with open(file_path, "rb") as f:
+            content = f.read()
+        
+        # Pull ascii/unicode sequences of length >= 4
+        import re
+        pattern = re.compile(b'[\\x20-\\x7E\\x09\\x0A\\x0D]{4,}')
+        strings = [s.decode('ascii', errors='ignore') for s in pattern.findall(content)]
+        filtered = [s.strip() for s in strings if len(s.strip()) > 6]
+        return "\n\n".join(filtered)
+    except Exception as e:
+        print(f"Fallback doc parser failed: {e}")
+        return ""

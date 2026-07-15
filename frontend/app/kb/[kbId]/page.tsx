@@ -130,6 +130,7 @@ export default function KBPage() {
             kbId={kbId}
             initialConvId={activeConvId}
             onConversationCreated={handleConversationCreated}
+            onUploadComplete={handleUploadComplete}
           />
         </main>
       </div>

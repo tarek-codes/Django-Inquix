@@ -50,7 +50,7 @@ class Migration(migrations.Migration):
                 ('content_hash', models.CharField(blank=True, max_length=64, null=True)),
                 ('file_size', models.BigIntegerField(blank=True, null=True)),
                 ('mime_type', models.CharField(blank=True, max_length=255, null=True)),
-                ('metadata_', models.JSONField(blank=True, db_column='metadata', default=dict)),
+                ('metadata', models.JSONField(blank=True, db_column='metadata', default=dict)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('kb', models.ForeignKey(db_column='kb_id', on_delete=django.db.models.deletion.CASCADE, related_name='documents', to='app.knowledgebase')),

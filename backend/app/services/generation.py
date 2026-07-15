@@ -74,17 +74,90 @@ async def generate_stream(
     query: str, chunks: list[dict], chat_history: list[dict] | None = None,
     kb_documents: list[str] | None = None, images: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
+    import hashlib
+    import json
+    from app.services.cache import get_cached_val, set_cached_val
+
     provider = settings.llm_provider
+    model = settings.llm_model
+
+    # Generate a stable cache key
+    image_hashes = []
+    if images:
+        for img in images:
+            if isinstance(img, str):
+                img_hash = hashlib.sha256(img.encode("utf-8")).hexdigest()
+            else:
+                img_hash = hashlib.sha256(img).hexdigest()
+            image_hashes.append(img_hash)
+
+    chunks_data = []
+    if chunks:
+        for c in chunks:
+            chunks_data.append({
+                "id": c.get("id"),
+                "content": c.get("content"),
+                "filename": c.get("filename"),
+                "source_type": c.get("source_type"),
+            })
+
+    cache_data = {
+        "provider": provider,
+        "model": model,
+        "query": query,
+        "chunks": chunks_data,
+        "chat_history": chat_history or [],
+        "kb_documents": kb_documents or [],
+        "image_hashes": image_hashes,
+    }
+    
+    serialized = json.dumps(cache_data, sort_keys=True)
+    hash_val = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    cache_key = f"inquix:llm_generation:{hash_val}"
+
+    # Try to fetch from cache
+    try:
+        cached_response = await get_cached_val(cache_key)
+        if cached_response:
+            import asyncio
+            chunk_size = 12
+            for i in range(0, len(cached_response), chunk_size):
+                yield cached_response[i:i+chunk_size]
+                await asyncio.sleep(0.005) # 5ms delay between chunks to make it smooth
+            return
+    except Exception as e:
+        print(f"Error reading LLM generation cache: {e}")
+
+    # Cache miss - stream from the LLM
+    full_response_parts = []
     if provider == "groq" and settings.groq_api_key:
         try:
             async for token in _generate_groq(query, chunks, chat_history, kb_documents, images):
+                full_response_parts.append(token)
                 yield token
+            
+            full_response = "".join(full_response_parts)
+            if full_response.strip():
+                try:
+                    await set_cached_val(cache_key, full_response)
+                except Exception as cache_err:
+                    print(f"Error saving LLM generation cache: {cache_err}")
             return
         except Exception as e:
             print(f"Groq generation failed, falling back to Ollama: {e}")
+            full_response_parts = [] # Reset on fallback
 
+    # Fallback / Default Ollama generation
     async for token in _generate_ollama(query, chunks, chat_history, kb_documents, images):
+        full_response_parts.append(token)
         yield token
+
+    full_response = "".join(full_response_parts)
+    if full_response.strip():
+        try:
+            await set_cached_val(cache_key, full_response)
+        except Exception as cache_err:
+            print(f"Error saving LLM generation cache: {cache_err}")
 
 
 async def _generate_groq(

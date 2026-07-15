@@ -20,12 +20,14 @@ node_modules/
 out/
 
 # Env
+.env
 .env.local
 .env.*.local
 
 # IDE
 .idea/
 .vscode/
+.mimocode/
 *.swp
 *.swo
 
