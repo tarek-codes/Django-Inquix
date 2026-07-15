@@ -425,11 +425,24 @@ function ChatMessage({
           {isUser ? (
             <p className="whitespace-pre-wrap">{message.content}</p>
           ) : (
-            <div className={clsx("markdown-body", isStreaming && !message.content && "min-h-[20px]")}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content || (isStreaming ? "..." : "")}
-              </ReactMarkdown>
-              {isStreaming && message.content && <span className="typing-cursor" />}
+            <div className={clsx("markdown-body", isStreaming && !message.content && "min-h-[24px]")}>
+              {isStreaming && !message.content ? (
+                <div className="flex items-center gap-2 text-xs text-gray-400 font-medium py-1 select-none">
+                  <span className="animate-pulse">Thinking</span>
+                  <div className="flex gap-1 items-center pt-0.5">
+                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.content}
+                  </ReactMarkdown>
+                  {isStreaming && message.content && <span className="typing-cursor" />}
+                </>
+              )}
             </div>
           )}
         </div>
