@@ -13,7 +13,7 @@ async def retrieve_chunks(query: str, kb_id: str, top_k: int | None = None) -> l
     query_embedding = await get_embedding(query)
 
     def _query_db():
-        chunks_qs = Chunk.objects.filter(kb_id=kb_id, status="active") \
+        chunks_qs = Chunk.objects.filter(kb_id=kb_id, status="active", document__status="ready") \
             .annotate(distance=CosineDistance('embedding', query_embedding)) \
             .select_related('document') \
             .order_by('distance')[:top_k * 2]

@@ -57,6 +57,8 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
       OLLAMA_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}

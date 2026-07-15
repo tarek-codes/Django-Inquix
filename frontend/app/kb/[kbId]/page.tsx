@@ -40,8 +40,10 @@ export default function KBPage() {
   }, [kbId]);
 
   useEffect(() => {
+    setActiveConvId(null);
+    setChatKey((prev) => prev + 1);
     loadData();
-  }, [loadData]);
+  }, [kbId, loadData]);
 
   const handleUploadComplete = () => {
     loadData();

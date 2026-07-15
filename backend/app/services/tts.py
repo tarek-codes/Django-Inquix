@@ -53,7 +53,7 @@ async def synthesize_kokoro(text: str, voice: str = 'af_heart') -> bytes | None:
         generator = pipeline(text, voice=voice, speed=1)
 
         all_audio = []
-        for _, (_, audio) in enumerate(generator):
+        for _, _, audio in generator:
             all_audio.append(audio)
 
         if not all_audio:

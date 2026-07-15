@@ -291,24 +291,21 @@ async def chat_view(request, kb_id):
 
             threshold = settings.similarity_threshold
             local_chunks = await retrieve_chunks(query, kb_id)
-            has_relevant_docs = any(c.get("similarity", 0) >= threshold for c in local_chunks)
+            
+            # Keep only chunks that actually meet the similarity threshold
+            relevant_local_chunks = [c for c in local_chunks if c.get("similarity", 0) >= threshold]
 
-            if has_relevant_docs:
+            if relevant_local_chunks:
                 web_chunks = []
             else:
                 web_chunks = await search_web(query, max_results=2)
 
-            chunks = list(local_chunks)
+            chunks = list(relevant_local_chunks)
             if web_chunks:
                 offset = len(chunks)
                 for i, wc in enumerate(web_chunks):
                     wc["chunk_index"] = offset + i
                     chunks.append(wc)
-
-            cited_chunk_ids = [
-                c["id"] for c in chunks
-                if c.get("similarity", 1) >= threshold and c.get("id")
-            ]
 
             async for token in generate_stream(query, chunks, chat_history, kb_documents, images=images):
                 full_answer += token
@@ -318,11 +315,11 @@ async def chat_view(request, kb_id):
                 conversation=conversation,
                 role="assistant",
                 content=full_answer,
-                cited_chunk_ids=cited_chunk_ids,
+                cited_chunk_ids=[],
             )
             await sync_to_async(assistant_msg.save)()
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id_str, 'citations': chunks})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id_str, 'citations': []})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"

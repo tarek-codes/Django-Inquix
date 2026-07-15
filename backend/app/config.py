@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
 
     gemini_api_key: str = ""
+    openai_api_key: str = ""
+    firecrawler_api_key: str = ""
 
     embed_provider: str = "ollama"
     embedding_model: str = "nomic-embed-text"

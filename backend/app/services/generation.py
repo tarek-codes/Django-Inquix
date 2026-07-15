@@ -36,15 +36,20 @@ def build_messages(
     context = "\n\n---\n\n".join(context_parts)
 
     rules = [
-        "Use your uploaded files ONLY if they contain the specific information requested.",
-        "If your files lack the exact details needed, use your general knowledge to answer.",
-        'When using general knowledge, start your response with "Based on my general knowledge:".',
-        "Cite sources as [1], [2] when using file content.",
-        "Be helpful and direct.",
+        "Answer the query directly, naturally, and completely using the provided UPLOADED FILES and WEB SEARCH RESULTS as context.",
+        "If the answer is not in the UPLOADED FILES, answer using your own general knowledge and use the WEB SEARCH RESULTS to verify or supplement the facts.",
+        "Do NOT include any citations, numbers in brackets (like [1], [2]), or source URLs in your answer. Provide the actual answer directly.",
+        "Do NOT mention 'Based on the provided information', 'Based on my general knowledge', 'knowledge base', or similar prefaces.",
+        "Do NOT complain that the files or web search results are missing details; simply answer directly and naturally without mentioning context files or search results.",
     ]
+
+    active_docs_str = ", ".join(kb_documents) if kb_documents else "None"
 
     system_msg = (
         "You are a helpful assistant.\n\n"
+        f"ACTIVE DOCUMENTS IN KNOWLEDGE BASE: {active_docs_str}\n"
+        "If a document is not listed above, it does not exist (or has been deleted). "
+        "Do not answer questions using deleted files, even if they appear in the chat history.\n\n"
         "RULES:\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules)) + "\n\n"
         f"CONTEXT:\n{context}"
     )
@@ -80,6 +85,15 @@ async def generate_stream(
 
     provider = settings.llm_provider
     model = settings.llm_model
+
+    # Auto-upgrade provider to a cloud API if Ollama is selected but cloud keys are available
+    if provider == "ollama":
+        if settings.gemini_api_key:
+            provider = "gemini"
+        elif settings.openai_api_key:
+            provider = "openai"
+        elif settings.groq_api_key:
+            provider = "groq"
 
     # Generate a stable cache key
     image_hashes = []
@@ -130,9 +144,70 @@ async def generate_stream(
 
     # Cache miss - stream from the LLM
     full_response_parts = []
-    if provider == "groq" and settings.groq_api_key:
+    success = False
+
+    # Define generators for each provider
+    generators = {
+        "gemini": _generate_gemini,
+        "openai": _generate_openai,
+        "groq": _generate_groq,
+        "ollama": _generate_ollama,
+    }
+
+    # Helper function to check if a provider is configured
+    def is_configured(p):
+        if p == "gemini":
+            return bool(settings.gemini_api_key)
+        if p == "openai":
+            return bool(settings.openai_api_key)
+        if p == "groq":
+            return bool(settings.groq_api_key)
+        if p == "ollama":
+            return True
+        return False
+
+    # 1. Try the user-configured provider first
+    if provider in generators and is_configured(provider):
         try:
-            async for token in _generate_groq(query, chunks, chat_history, kb_documents, images):
+            async for token in generators[provider](query, chunks, chat_history, kb_documents, images):
+                full_response_parts.append(token)
+                yield token
+            success = True
+        except Exception as e:
+            print(f"Configured provider {provider} generation failed: {e}")
+            full_response_parts = [] # reset partial outputs on failure
+
+    # 2. If the configured provider failed or wasn't configured, fall back in priority order:
+    if not success:
+        fallback_order = ["gemini", "openai", "groq", "ollama"]
+        for p in fallback_order:
+            if p == provider:  # already tried
+                continue
+            if is_configured(p):
+                try:
+                    print(f"Trying fallback provider: {p}")
+                    async for token in generators[p](query, chunks, chat_history, kb_documents, images):
+                        full_response_parts.append(token)
+                        yield token
+                    success = True
+                    break
+                except Exception as e:
+                    print(f"Fallback provider {p} failed: {e}")
+                    full_response_parts = []
+
+    # Save to cache if we succeeded
+    if success:
+        full_response = "".join(full_response_parts)
+        if full_response.strip():
+            try:
+                await set_cached_val(cache_key, full_response)
+            except Exception as cache_err:
+                print(f"Error saving LLM generation cache: {cache_err}")
+    else:
+        # Extreme fallback to local Ollama if all configurations and fallbacks failed
+        try:
+            print("Extreme fallback to local Ollama")
+            async for token in _generate_ollama(query, chunks, chat_history, kb_documents, images):
                 full_response_parts.append(token)
                 yield token
             
@@ -142,22 +217,9 @@ async def generate_stream(
                     await set_cached_val(cache_key, full_response)
                 except Exception as cache_err:
                     print(f"Error saving LLM generation cache: {cache_err}")
-            return
-        except Exception as e:
-            print(f"Groq generation failed, falling back to Ollama: {e}")
-            full_response_parts = [] # Reset on fallback
-
-    # Fallback / Default Ollama generation
-    async for token in _generate_ollama(query, chunks, chat_history, kb_documents, images):
-        full_response_parts.append(token)
-        yield token
-
-    full_response = "".join(full_response_parts)
-    if full_response.strip():
-        try:
-            await set_cached_val(cache_key, full_response)
-        except Exception as cache_err:
-            print(f"Error saving LLM generation cache: {cache_err}")
+        except Exception as ollama_err:
+            print(f"All LLM generation paths (including Ollama) failed: {ollama_err}")
+            yield f"Error: All LLM generation paths failed. Details: {ollama_err}"
 
 
 async def _generate_groq(
@@ -195,6 +257,124 @@ async def _generate_groq(
                     content = delta.get("content", "")
                     if content:
                         yield content
+                except json.JSONDecodeError:
+                    continue
+
+
+async def _generate_openai(
+    query: str, chunks: list[dict], chat_history: list[dict] | None = None,
+    kb_documents: list[str] | None = None, images: list[str] | None = None,
+) -> AsyncGenerator[str, None]:
+    messages = build_messages(query, chunks, chat_history, kb_documents, images)
+    
+    # Model resolution
+    model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream(
+            "POST",
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "temperature": 0.3,
+                "max_tokens": 2048,
+            },
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    return
+                try:
+                    data = json.loads(data_str)
+                    delta = data.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except json.JSONDecodeError:
+                    continue
+
+
+async def _generate_gemini(
+    query: str, chunks: list[dict], chat_history: list[dict] | None = None,
+    kb_documents: list[str] | None = None, images: list[str] | None = None,
+) -> AsyncGenerator[str, None]:
+    messages = build_messages(query, chunks, chat_history, kb_documents, images)
+    
+    system_text = ""
+    contents = []
+    
+    for m in messages:
+        if m["role"] == "system":
+            system_text = m["content"]
+        else:
+            role = "user" if m["role"] == "user" else "model"
+            content = m["content"]
+            
+            parts = []
+            if isinstance(content, list):
+                for p in content:
+                    if p.get("type") == "text":
+                        parts.append({"text": p["text"]})
+                    elif p.get("type") == "image_url":
+                        url = p["image_url"]["url"]
+                        if url.startswith("data:"):
+                            header, base64_data = url.split(",", 1)
+                            mime_type = header.split(";")[0].split(":")[1]
+                            parts.append({
+                                "inlineData": {
+                                    "mimeType": mime_type,
+                                    "data": base64_data
+                                }
+                            })
+            else:
+                parts.append({"text": content})
+                
+            contents.append({"role": role, "parts": parts})
+            
+    model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.3,
+        }
+    }
+    if system_text:
+        payload["systemInstruction"] = {
+            "parts": [{"text": system_text}]
+        }
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={settings.gemini_api_key}"
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream(
+            "POST",
+            url,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                try:
+                    data = json.loads(data_str)
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        for p in parts:
+                            text = p.get("text", "")
+                            if text:
+                                yield text
                 except json.JSONDecodeError:
                     continue
 
@@ -323,3 +503,126 @@ async def _generate_ollama(
                         yield data["response"]
                 except json.JSONDecodeError:
                     continue
+
+
+async def should_search_web(query: str) -> bool:
+    q = query.strip().lower()
+    
+    # Greetings & simple chit-chat
+    greetings = {"hello", "hi", "hey", "how are you", "good morning", "good afternoon", "good evening", "greetings"}
+    if q in greetings or q.startswith(("hello ", "hi ", "hey ")):
+        return False
+        
+    # Coding prompts, creative writing, general explanations
+    creative_words = ("write a python", "write a code", "write a script", "create a function", "write a story", "write an essay", "generate a ", "explain the concept of", "can you write")
+    if q.startswith(creative_words):
+        return False
+        
+    # Math expressions
+    import re
+    if re.match(r'^[\d+\-*/\s().]+$', q):
+        return False
+
+    system_prompt = (
+        "You are a query router. Decide if a query requires up-to-date information from the web, "
+        "current events, specific real-time facts, or scraping a website.\n"
+        "If the query is a general knowledge question, mathematical query, coding request, creative prompt, "
+        "or general advice that can be answered accurately using standard pre-trained LLM knowledge, classify it as 'general'.\n"
+        "If it requires current info, search engine queries, or specific details not present in standard knowledge, classify it as 'web'.\n"
+        "Respond with exactly one word: 'web' or 'general'."
+    )
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Query: {query}"}
+    ]
+    
+    # Define routing functions for each provider
+    async def _route_gemini():
+        model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            contents = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]} for m in messages if m["role"] != "system"]
+            payload = {"contents": contents}
+            system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+            if system_msg:
+                payload["systemInstruction"] = {"parts": [{"text": system_msg}]}
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+            return "web" in text
+
+    async def _route_openai():
+        model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
+        url = "https://api.openai.com/v1/chat/completions"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json={"model": model, "messages": messages, "max_tokens": 5, "temperature": 0.0}
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip().lower()
+            return "web" in text
+
+    async def _route_groq():
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 5, "temperature": 0.0}
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip().lower()
+            return "web" in text
+
+    async def _route_ollama():
+        url = f"{settings.ollama_url}/api/generate"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                url,
+                json={"model": settings.llm_model, "prompt": f"{system_prompt}\n\nQuery: {query}\n\nClassification:", "stream": False}
+            )
+            resp.raise_for_status()
+            text = resp.json().get("response", "").strip().lower()
+            return "web" in text
+
+    # Try providers in fallback order
+    provider = settings.llm_provider
+    if provider == "ollama":
+        if settings.gemini_api_key:
+            provider = "gemini"
+        elif settings.openai_api_key:
+            provider = "openai"
+        elif settings.groq_api_key:
+            provider = "groq"
+
+    providers = [
+        ("gemini", _route_gemini, bool(settings.gemini_api_key)),
+        ("openai", _route_openai, bool(settings.openai_api_key)),
+        ("groq", _route_groq, bool(settings.groq_api_key)),
+        ("ollama", _route_ollama, True),
+    ]
+
+    # Reorder to try selected provider first
+    try_order = []
+    for name, func, configured in providers:
+        if name == provider and configured:
+            try_order.append((name, func))
+            break
+            
+    for name, func, configured in providers:
+        if name != provider and configured:
+            try_order.append((name, func))
+
+    for name, func in try_order:
+        try:
+            res = await func()
+            print(f"[Router] {name} classified query as web={res}")
+            return res
+        except Exception as e:
+            print(f"[Router] {name} failed: {e}")
+
+    # Default fallback: search web to be safe
+    return True

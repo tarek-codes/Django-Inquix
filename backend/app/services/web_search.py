@@ -4,6 +4,38 @@ from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
 from app.config import settings
 
 
+async def _firecrawler_scrape(client: httpx.AsyncClient, url: str) -> str:
+    if not settings.firecrawler_api_key:
+        return ""
+    try:
+        response = await client.post(
+            "https://api.firecrawl.dev/v1/scrape",
+            headers={
+                "Authorization": f"Bearer {settings.firecrawler_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "url": url,
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+            },
+            timeout=15.0
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return data.get("data", {}).get("markdown", "")
+    except Exception as e:
+        print(f"Firecrawler scrape failed for {url}: {e}")
+    return ""
+
+
+async def _scrape_urls_parallel(urls: list[str]) -> list[str]:
+    async with httpx.AsyncClient() as client:
+        tasks = [_firecrawler_scrape(client, url) for url in urls]
+        return await asyncio.gather(*tasks)
+
+
 async def search_web(query: str, max_results: int = 3) -> list[dict]:
     import hashlib
     import json
@@ -25,15 +57,15 @@ async def search_web(query: str, max_results: int = 3) -> list[dict]:
 
     results = []
     try:
-        results = await _crawl4ai_search(query, max_results)
+        results = await _duckduckgo_search(query, max_results)
     except Exception as e:
-        print(f"Crawl4AI search failed: {e}")
+        print(f"DuckDuckGo search failed: {e}")
 
     if not results:
         try:
-            results = await _duckduckgo_search(query, max_results)
+            results = await _crawl4ai_search(query, max_results)
         except Exception as e:
-            print(f"DuckDuckGo search failed: {e}")
+            print(f"Crawl4AI search failed: {e}")
 
     if not results:
         try:
@@ -62,18 +94,42 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
     if not search_urls:
         return []
 
+    urls = [info["url"] for info in search_urls]
     chunks = []
-    async with AsyncWebCrawler() as crawler:
-        for i, info in enumerate(search_urls):
-            try:
-                config = CrawlerRunConfig(
-                    cache_mode=CacheMode.ENABLED,
-                    word_count_threshold=10,
-                )
-                result = await crawler.arun(url=info["url"], config=config)
-                if result and result.markdown:
+
+    # 1. Try Firecrawler first if key is configured
+    if settings.firecrawler_api_key:
+        print(f"Using Firecrawler to scrape Wikipedia search results: {urls}")
+        scrape_results = await _scrape_urls_parallel(urls)
+        for i, markdown in enumerate(scrape_results):
+            if markdown:
+                info = search_urls[i]
+                chunks.append({
+                    "id": f"crawl-{i}",
+                    "content": markdown[:2000].strip(),
+                    "chunk_index": 0,
+                    "metadata": {"url": info["url"], "title": info["title"]},
+                    "filename": info["title"],
+                    "source_type": "web",
+                    "similarity": 1.0,
+                })
+        if chunks:
+            return chunks
+
+    # 2. Fallback to Crawl4AI
+    try:
+        async with AsyncWebCrawler() as crawler:
+            config = CrawlerRunConfig(
+                cache_mode=CacheMode.ENABLED,
+                word_count_threshold=10,
+                page_timeout=8000,
+            )
+            results = await crawler.arun_many(urls=urls, config=config)
+            for i, result in enumerate(results):
+                if result and result.success and result.markdown:
                     text = result.markdown[:2000].strip()
                     if text:
+                        info = search_urls[i]
                         chunks.append({
                             "id": f"crawl-{i}",
                             "content": text,
@@ -83,8 +139,8 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
                             "source_type": "web",
                             "similarity": 1.0,
                         })
-            except Exception as e:
-                print(f"Crawl4AI error for {info['url']}: {e}")
+    except Exception as e:
+        print(f"Crawl4AI search failed: {e}")
     return chunks
 
 
@@ -109,32 +165,50 @@ async def _duckduckgo_search(query: str, max_results: int) -> list[dict]:
         if not results:
             return []
 
+        urls = [r["url"] for r in results]
+        scrape_results = []
+        
+        # 1. Try Firecrawler first if key is configured
+        if settings.firecrawler_api_key:
+            print(f"Using Firecrawler to scrape DDG search results: {urls}")
+            scrape_results = await _scrape_urls_parallel(urls)
+        
+        # 2. Fallback to Crawl4AI if Firecrawler wasn't configured or returned nothing
+        if not any(scrape_results):
+            try:
+                async with AsyncWebCrawler() as crawler:
+                    config = CrawlerRunConfig(
+                        cache_mode=CacheMode.ENABLED,
+                        word_count_threshold=10,
+                        page_timeout=8000,
+                    )
+                    crawl_results = await crawler.arun_many(urls=urls, config=config)
+                    scrape_results = [res.markdown if (res and res.success) else "" for res in crawl_results]
+            except Exception as e:
+                print(f"Crawl4AI arun_many failed in DDG: {e}")
+                scrape_results = []
+
         chunks = []
-        async with AsyncWebCrawler() as crawler:
-            for i, r in enumerate(results):
-                url = r["url"]
-                title = r["title"]
-                snippet = r.get("body", "")
-                full_text = snippet
+        for i, r in enumerate(results):
+            url = r["url"]
+            title = r["title"]
+            snippet = r.get("body", "")
+            
+            # Use scrape result if available, otherwise fall back to DDG snippet
+            full_text = snippet
+            if i < len(scrape_results) and scrape_results[i]:
+                full_text = scrape_results[i][:2000].strip()
 
-                try:
-                    config = CrawlerRunConfig(cache_mode=CacheMode.ENABLED, word_count_threshold=10)
-                    crawl_result = await crawler.arun(url=url, config=config)
-                    if crawl_result and crawl_result.markdown:
-                        full_text = crawl_result.markdown[:2000].strip() or snippet
-                except Exception:
-                    pass
-
-                if full_text:
-                    chunks.append({
-                        "id": f"ddg-{i}",
-                        "content": full_text,
-                        "chunk_index": 0,
-                        "metadata": {"url": url, "title": title, "snippet": snippet},
-                        "filename": title or f"DuckDuckGo {i + 1}",
-                        "source_type": "web",
-                        "similarity": 1.0,
-                    })
+            if full_text:
+                chunks.append({
+                    "id": f"ddg-{i}",
+                    "content": full_text,
+                    "chunk_index": 0,
+                    "metadata": {"url": url, "title": title, "snippet": snippet},
+                    "filename": title or f"DuckDuckGo {i + 1}",
+                    "source_type": "web",
+                    "similarity": 1.0,
+                })
         return chunks
     except Exception as e:
         print(f"DuckDuckGo search failed: {e}")
