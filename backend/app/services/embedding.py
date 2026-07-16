@@ -100,6 +100,14 @@ async def get_embedding(text: str) -> list[float]:
             err_msg += "No available or functioning embedding provider was configured."
         raise ValueError(err_msg)
 
+    # Ensure the embedding vector matches the pgvector schema dimension (exactly 3072)
+    if embedding and len(embedding) != 3072:
+        print(f"[get_embedding] Adjusting vector size from {len(embedding)} to 3072 dimensions")
+        if len(embedding) < 3072:
+            embedding = embedding + [0.0] * (3072 - len(embedding))
+        else:
+            embedding = embedding[:3072]
+
     try:
         await set_cached_val(cache_key, json.dumps(embedding))
     except Exception as e:

@@ -274,8 +274,13 @@ async def chat_view(request, kb_id):
     conv_id_str = str(conversation.id)
 
     async def stream_response():
+        import asyncio
         full_answer = ""
         try:
+            # Yield an initial empty chunk to flush headers immediately and establish connection
+            yield f"data: {json.dumps({'type': 'token', 'content': ''})}\n\n"
+            await asyncio.sleep(0)
+
             # Perform history, document, vector search, and web queries inside the generator
             # to prevent blocking the initial EventSource connection startup.
             def _get_history(conv_id):
@@ -314,6 +319,7 @@ async def chat_view(request, kb_id):
             async for token in generate_stream(query, chunks, chat_history, kb_documents, images=images):
                 full_answer += token
                 yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                await asyncio.sleep(0.01)
 
             assistant_msg = Message(
                 conversation=conversation,
@@ -324,9 +330,11 @@ async def chat_view(request, kb_id):
             await sync_to_async(assistant_msg.save)()
 
             yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id_str, 'citations': []})}\n\n"
+            await asyncio.sleep(0)
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            await asyncio.sleep(0)
 
     response = StreamingHttpResponse(
         stream_response(),

@@ -47,6 +47,10 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated, onUp
       return;
     }
 
+    if (initialConvId === convId) {
+      return;
+    }
+
     let cancelled = false;
     setInitialLoading(true);
     fetch(`${API}/api/conversations/${initialConvId}/messages`)
@@ -72,7 +76,7 @@ export function ChatInterface({ kbId, initialConvId, onConversationCreated, onUp
     return () => {
       cancelled = true;
     };
-  }, [initialConvId]);
+  }, [initialConvId, convId]);
 
   const generateSpeech = useCallback(
     async (text: string, msgIndex: number) => {

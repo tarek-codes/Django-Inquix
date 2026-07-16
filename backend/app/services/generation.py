@@ -239,10 +239,10 @@ async def generate_stream(
                 await set_cached_val(cache_key, full_response)
             except Exception as cache_err:
                 print(f"Error saving LLM generation cache: {cache_err}")
-    elif not settings.disable_ollama:
+    else:
         # Extreme fallback to local Ollama if all configurations and fallbacks failed
         try:
-            print("Extreme fallback to local Ollama")
+            print("Extreme fallback to local Ollama (since all cloud options failed)")
             async for token in _generate_ollama(query, chunks, chat_history, kb_documents, images):
                 full_response_parts.append(token)
                 yield token
@@ -254,11 +254,8 @@ async def generate_stream(
                 except Exception as cache_err:
                     print(f"Error saving LLM generation cache: {cache_err}")
         except Exception as ollama_err:
-            print(f"All LLM generation paths (including Ollama) failed: {ollama_err}")
-            yield f"Error: All LLM generation paths failed. Details: {ollama_err}"
-    else:
-        print("All LLM generation paths failed (Ollama fallback is disabled)")
-        yield "Error: All cloud LLM generation paths failed, and local Ollama fallback is disabled."
+            print(f"All LLM generation paths (including Ollama fallback) failed: {ollama_err}")
+            yield f"Error: All LLM generation paths failed (including local Ollama fallback). Details: {ollama_err}"
 
 
 async def _generate_groq(
@@ -379,7 +376,7 @@ async def _generate_gemini(
                 
             contents.append({"role": role, "parts": parts})
             
-    model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
+    model = settings.llm_model if "gemini" in settings.llm_model else "gemini-3.5-flash"
     payload = {
         "contents": contents,
         "generationConfig": {
@@ -439,70 +436,74 @@ async def _caption_image(image_base64: str) -> str:
             print(f"[_caption_image] Tesseract OCR failed: {e}")
 
         caption = ""
-        if settings.disable_ollama:
-            if settings.gemini_api_key:
-                try:
-                    print("[_caption_image] Using Gemini Vision for captioning")
-                    model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        payload = {
-                            "contents": [{
-                                "parts": [
-                                    {"text": "Describe this image briefly. What type of document or scene is it?"},
-                                    {
-                                        "inlineData": {
-                                            "mimeType": "image/jpeg",
-                                            "data": image_base64
-                                        }
-                                    }
-                                ]
-                            }]
-                        }
-                        resp = await client.post(url, json=payload)
-                        resp.raise_for_status()
-                        caption = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        print(f"[_caption_image] Gemini caption: {caption[:100]}")
-                except Exception as e:
-                    print(f"[_caption_image] Gemini Vision captioning failed: {e}")
-
-            if not caption and settings.openai_api_key:
-                try:
-                    print("[_caption_image] Using OpenAI Vision for captioning")
-                    model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        resp = await client.post(
-                            "https://api.openai.com/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {settings.openai_api_key}",
-                                "Content-Type": "application/json",
-                            },
-                            json={
-                                "model": model,
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "text", "text": "Describe this image briefly. What type of document or scene is it?"},
-                                            {
-                                                "type": "image_url",
-                                                "image_url": {
-                                                    "url": f"data:image/jpeg;base64,{image_base64}"
-                                                }
-                                            }
-                                        ]
-                                    }
-                                ],
-                                "max_tokens": 150,
-                            }
-                        )
-                        resp.raise_for_status()
-                        caption = resp.json()["choices"][0]["message"]["content"].strip()
-                        print(f"[_caption_image] OpenAI caption: {caption[:100]}")
-                except Exception as e:
-                    print(f"[_caption_image] OpenAI Vision captioning failed: {e}")
-        else:
+        # 1. Try Gemini Vision if key is configured
+        if settings.gemini_api_key:
             try:
+                print("[_caption_image] Using Gemini Vision for captioning")
+                model = settings.llm_model if "gemini" in settings.llm_model else "gemini-3.5-flash"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    payload = {
+                        "contents": [{
+                            "parts": [
+                                {"text": "Describe this image briefly. What type of document or scene is it?"},
+                                {
+                                    "inlineData": {
+                                        "mimeType": "image/jpeg",
+                                        "data": image_base64
+                                    }
+                                }
+                            ]
+                        }]
+                    }
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                    caption = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    print(f"[_caption_image] Gemini caption: {caption[:100]}")
+            except Exception as e:
+                print(f"[_caption_image] Gemini Vision captioning failed: {e}")
+
+        # 2. Try OpenAI Vision if key is configured
+        if not caption and settings.openai_api_key:
+            try:
+                print("[_caption_image] Using OpenAI Vision for captioning")
+                model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {settings.openai_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "Describe this image briefly. What type of document or scene is it?"},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:image/jpeg;base64,{image_base64}"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ],
+                            "max_tokens": 150,
+                        }
+                    )
+                    resp.raise_for_status()
+                    caption = resp.json()["choices"][0]["message"]["content"].strip()
+                    print(f"[_caption_image] OpenAI caption: {caption[:100]}")
+            except Exception as e:
+                print(f"[_caption_image] OpenAI Vision captioning failed: {e}")
+
+        # 3. Fallback to local Ollama
+        if not caption:
+            try:
+                print("[_caption_image] Falling back to Ollama Vision for captioning")
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     response = await client.post(
                         f"{settings.ollama_url}/api/generate",
@@ -582,8 +583,17 @@ async def _generate_ollama(
 
     prompt = "\n".join(prompt_parts)
 
+    # Resolve local model
+    local_model = settings.llm_model
+    if images:
+        local_model = settings.vision_model
+    else:
+        cloud_models_keywords = ("gpt", "claude", "gemini", "llama-3.3", "groq", "o1-", "deepseek")
+        if any(kw in local_model.lower() for kw in cloud_models_keywords):
+            local_model = "qwen2.5:3b"
+
     ollama_payload = {
-        "model": settings.llm_model,
+        "model": local_model,
         "prompt": prompt,
         "stream": True,
         "options": {"temperature": 0.3, "num_predict": 2048},
@@ -641,7 +651,7 @@ async def should_search_web(query: str) -> bool:
     
     # Define routing functions for each provider
     async def _route_gemini():
-        model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
+        model = settings.llm_model if "gemini" in settings.llm_model else "gemini-3.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
         async with httpx.AsyncClient(timeout=5.0) as client:
             contents = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]} for m in messages if m["role"] != "system"]

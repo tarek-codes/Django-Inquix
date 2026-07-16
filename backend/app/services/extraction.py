@@ -144,71 +144,75 @@ async def _describe_image(file_path: str) -> str:
         with open(file_path, "rb") as f:
             image_base64 = base64.b64encode(f.read()).decode("utf-8")
 
-        # Try Gemini or OpenAI vision first if Ollama is disabled
-        if settings.disable_ollama:
-            if settings.gemini_api_key:
-                try:
-                    print("[_describe_image] Using Gemini Vision for detailed description")
-                    model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        payload = {
-                            "contents": [{
-                                "parts": [
-                                    {"text": "Describe this image in detail. What do you see?"},
-                                    {
-                                        "inlineData": {
-                                            "mimeType": "image/jpeg",
-                                            "data": image_base64
-                                        }
+        # 1. Try Gemini Vision if key is configured
+        if settings.gemini_api_key:
+            try:
+                print("[_describe_image] Using Gemini Vision for detailed description")
+                model = settings.llm_model if "gemini" in settings.llm_model else "gemini-3.5-flash"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    payload = {
+                        "contents": [{
+                            "parts": [
+                                {"text": "Describe this image in detail. What do you see?"},
+                                {
+                                    "inlineData": {
+                                        "mimeType": "image/jpeg",
+                                        "data": image_base64
                                     }
-                                ]
-                            }]
-                        }
-                        resp = await client.post(url, json=payload)
-                        resp.raise_for_status()
-                        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                except Exception as e:
-                    print(f"[_describe_image] Gemini Vision description failed: {e}")
+                                }
+                            ]
+                        }]
+                    }
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                    caption = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if caption:
+                        return caption
+            except Exception as e:
+                print(f"[_describe_image] Gemini Vision description failed: {e}")
 
-            if settings.openai_api_key:
-                try:
-                    print("[_describe_image] Using OpenAI Vision for detailed description")
-                    model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        resp = await client.post(
-                            "https://api.openai.com/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {settings.openai_api_key}",
-                                "Content-Type": "application/json",
-                            },
-                            json={
-                                "model": model,
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "text", "text": "Describe this image in detail. What do you see?"},
-                                            {
-                                                "type": "image_url",
-                                                "image_url": {
-                                                    "url": f"data:image/jpeg;base64,{image_base64}"
-                                                }
+        # 2. Try OpenAI Vision if key is configured
+        if settings.openai_api_key:
+            try:
+                print("[_describe_image] Using OpenAI Vision for detailed description")
+                model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {settings.openai_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "Describe this image in detail. What do you see?"},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:image/jpeg;base64,{image_base64}"
                                             }
-                                        ]
-                                    }
-                                ],
-                                "max_tokens": 500,
-                            }
-                        )
-                        resp.raise_for_status()
-                        return resp.json()["choices"][0]["message"]["content"].strip()
-                except Exception as e:
-                    print(f"[_describe_image] OpenAI Vision description failed: {e}")
-            
-            # If all vision APIs fail and Ollama is disabled, return empty description
-            return ""
-        else:
+                                        }
+                                    ]
+                                }
+                            ],
+                            "max_tokens": 500,
+                        }
+                    )
+                    resp.raise_for_status()
+                    caption = resp.json()["choices"][0]["message"]["content"].strip()
+                    if caption:
+                        return caption
+            except Exception as e:
+                print(f"[_describe_image] OpenAI Vision description failed: {e}")
+
+        # 3. Fallback to local Ollama
+        try:
+            print("[_describe_image] Falling back to Ollama Vision for detailed description")
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     f"{settings.ollama_url}/api/generate",
@@ -221,6 +225,9 @@ async def _describe_image(file_path: str) -> str:
                 )
                 response.raise_for_status()
                 return response.json().get("response", "")
+        except Exception as e:
+            print(f"[_describe_image] Ollama Vision model failed: {e}")
+            return ""
     except Exception as e:
         print(f"Vision model failed: {e}")
         return ""
