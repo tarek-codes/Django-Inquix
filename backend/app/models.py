@@ -55,7 +55,7 @@ class Chunk(models.Model):
     )
     chunk_index = models.IntegerField()
     content = models.TextField()
-    embedding = VectorField(dimensions=768, null=True, blank=True)
+    embedding = VectorField(dimensions=3072, null=True, blank=True)
     token_count = models.IntegerField(null=True, blank=True)
     chunk_metadata = models.JSONField(default=dict, blank=True, db_column="metadata")
     status = models.CharField(max_length=50, default="active")

@@ -9,6 +9,22 @@ async def get_embedding(text: str) -> list[float]:
 
     provider = settings.embed_provider
     model = settings.embedding_model
+
+    # If Ollama is disabled or configured to use Ollama, auto-upgrade to available cloud APIs
+    if provider == "ollama" and (settings.disable_ollama or settings.openai_api_key or settings.gemini_api_key or settings.jina_api_key):
+        if settings.openai_api_key:
+            provider = "openai"
+            if not model or model == "nomic-embed-text":
+                model = "text-embedding-3-small"
+        elif settings.gemini_api_key:
+            provider = "gemini"
+            if not model or model == "nomic-embed-text":
+                model = "gemini-embedding-2"
+        elif settings.jina_api_key:
+            provider = "jina"
+            if not model or model == "nomic-embed-text":
+                model = "jina-embeddings-v2-base-en"
+
     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     cache_key = f"inquix:embedding:{provider}:{model}:{text_hash}"
 
@@ -19,17 +35,70 @@ async def get_embedding(text: str) -> list[float]:
     except Exception as e:
         print(f"Error reading embedding cache: {e}")
 
-    if provider == "jina" and settings.jina_api_key:
+    # Map providers to implementation functions
+    generators = {
+        "jina": lambda t, m: _embed_jina(t),
+        "openai": _embed_openai,
+        "gemini": _embed_gemini,
+        "ollama": lambda t, m: _embed_ollama(t),
+    }
+
+    # Verify if a provider is configured and not disabled
+    def is_configured(p):
+        if p == "ollama":
+            return not settings.disable_ollama
+        if p == "openai":
+            return bool(settings.openai_api_key)
+        if p == "gemini":
+            return bool(settings.gemini_api_key)
+        if p == "jina":
+            return bool(settings.jina_api_key)
+        return False
+
+    success = False
+    embedding = None
+    errors = {}
+
+    # Try primary provider
+    if provider in generators and is_configured(provider):
         try:
-            embedding = await _embed_jina(text)
+            embedding = await generators[provider](text, model)
+            success = True
         except Exception as e:
-            print(f"Jina embedding failed, falling back to Ollama: {e}")
-            embedding = await _embed_ollama(text)
-        else:
-            # Successfully got jina embedding, we will cache it
-            pass
-    else:
-        embedding = await _embed_ollama(text)
+            errors[provider] = str(e)
+            print(f"Embedding provider {provider} failed: {e}")
+
+    # Fallback to alternative providers
+    if not success:
+        fallback_order = ["openai", "gemini", "jina", "ollama"]
+        for p in fallback_order:
+            if p == provider:
+                continue
+            if is_configured(p):
+                try:
+                    print(f"Trying fallback embedding provider: {p}")
+                    fallback_model = model
+                    if p == "openai":
+                        fallback_model = "text-embedding-3-small"
+                    elif p == "gemini":
+                        fallback_model = "gemini-embedding-2"
+                    elif p == "jina":
+                        fallback_model = "jina-embeddings-v2-base-en"
+                    elif p == "ollama":
+                        fallback_model = settings.embedding_model
+
+                    embedding = await generators[p](text, fallback_model)
+                    success = True
+                    break
+                except Exception as e:
+                    errors[p] = str(e)
+                    print(f"Fallback embedding provider {p} failed: {e}")
+
+    if not success:
+        err_msg = "All embedding generation paths failed. Details: " + ", ".join(f"{k}: {v}" for k, v in errors.items())
+        if not errors:
+            err_msg += "No available or functioning embedding provider was configured."
+        raise ValueError(err_msg)
 
     try:
         await set_cached_val(cache_key, json.dumps(embedding))
@@ -56,6 +125,40 @@ async def _embed_jina(text: str) -> list[float]:
         return response.json()["data"][0]["embedding"]
 
 
+async def _embed_openai(text: str, model: str) -> list[float]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/embeddings",
+            headers={
+                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "input": text[:8000],
+            },
+        )
+        response.raise_for_status()
+        return response.json()["data"][0]["embedding"]
+
+
+async def _embed_gemini(text: str, model: str) -> list[float]:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent?key={settings.gemini_api_key}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": f"models/{model}",
+                "content": {
+                    "parts": [{"text": text[:8000]}]
+                }
+            },
+        )
+        response.raise_for_status()
+        return response.json()["embedding"]["values"]
+
+
 async def _embed_ollama(text: str) -> list[float]:
     async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(
@@ -69,8 +172,8 @@ async def _embed_ollama(text: str) -> list[float]:
 async def ensure_models():
     import asyncio
 
-    if settings.llm_provider != "ollama" and settings.embed_provider != "ollama":
-        print("Cloud providers configured, skipping Ollama model checks")
+    if settings.disable_ollama or (settings.llm_provider != "ollama" and settings.embed_provider != "ollama"):
+        print("Cloud providers configured or Ollama disabled, skipping Ollama model checks")
         return
 
     for attempt in range(12):

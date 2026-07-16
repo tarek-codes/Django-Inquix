@@ -130,7 +130,7 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
                 info = search_urls[i]
                 chunks.append({
                     "id": f"crawl-{i}",
-                    "content": clean_markdown(markdown)[:16000].strip(),
+                    "content": clean_markdown(markdown)[:3000].strip(),
                     "chunk_index": 0,
                     "metadata": {"url": info["url"], "title": info["title"]},
                     "filename": info["title"],
@@ -151,7 +151,7 @@ async def _crawl4ai_search(query: str, max_results: int) -> list[dict]:
             results = await crawler.arun_many(urls=urls, config=config)
             for i, result in enumerate(results):
                 if result and result.success and result.markdown:
-                    text = clean_markdown(result.markdown)[:16000].strip()
+                    text = clean_markdown(result.markdown)[:3000].strip()
                     if text:
                         info = search_urls[i]
                         chunks.append({
@@ -221,7 +221,7 @@ async def _duckduckgo_search(query: str, max_results: int) -> list[dict]:
             # Use scrape result if available, otherwise fall back to DDG snippet
             full_text = snippet
             if i < len(scrape_results) and scrape_results[i]:
-                full_text = clean_markdown(scrape_results[i])[:16000].strip()
+                full_text = clean_markdown(scrape_results[i])[:3000].strip()
 
             if full_text:
                 chunks.append({

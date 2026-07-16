@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str = "postgresql://inquix:inquix@localhost:5432/inquix"
     ollama_url: str = "http://localhost:11434"
+    disable_ollama: bool = False
     redis_url: str = "redis://localhost:6379/0"
     redis_user_key: str = ""
     redis_account_key: str = ""

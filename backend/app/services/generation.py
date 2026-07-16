@@ -48,7 +48,7 @@ def build_messages(
             context_parts.append("YOUR UPLOADED FILES:")
             for i, c in enumerate(doc_chunks):
                 context_parts.append(
-                    f"[{i + 1}] {c.get('filename', f'Document {i + 1}')}\n{c['content']}"
+                    f"[{i + 1}] {c.get('filename', f'Document {i + 1}')}\n{c['content'][:4000]}"
                 )
 
         if web_chunks:
@@ -56,17 +56,19 @@ def build_messages(
             offset = len(doc_chunks)
             for i, c in enumerate(web_chunks):
                 context_parts.append(
-                    f"[{offset + i + 1}] {c.get('filename', f'Web {i + 1}')}\n{c['content']}"
+                    f"[{offset + i + 1}] {c.get('filename', f'Web {i + 1}')}\n{c['content'][:2000]}"
                 )
 
         context = "\n\n---\n\n".join(context_parts)
 
         rules = [
-            "Answer the user's query directly and naturally. Use the provided UPLOADED FILES and WEB SEARCH RESULTS to answer if they contain relevant details.",
-            "You are NOT restricted to the provided context. If the context does not contain the answer, or if you already know it, use your own pre-trained general knowledge to provide a complete, accurate answer.",
-            "Never complain about missing information in the context or search results. Simply answer the question directly using your general knowledge.",
+            "Answer the user's query directly and concisely.",
+            "When WEB SEARCH RESULTS are provided, ALWAYS prioritize them over your pretrained knowledge — web results contain real-time, up-to-date information that your training may not have.",
+            "Cross-reference all web results before answering. If multiple sources agree, state that clearly. If sources conflict, cite the most recent or most credible source and note the discrepancy briefly.",
+            "For questions about current officeholders, recent events, or factual details that change over time, treat web results as ground truth. Do NOT rely on your pretrained knowledge for these.",
+            "If you are uncertain because sources conflict or are unclear, say so honestly rather than guessing. For example: 'According to recent sources, X holds this position, though earlier sources mention Y.'",
             "Do NOT include any citations, bracketed numbers (like [1], [2]), or source URLs in your response.",
-            "Do NOT mention 'Based on the provided information', 'Based on my general knowledge', 'According to the context', or similar phrases.",
+            "Do NOT start your answer with 'Based on the provided information', 'Based on my general knowledge', 'According to the context', or similar meta-phrases.",
         ]
 
     active_docs_str = ", ".join(kb_documents) if kb_documents else "None"
@@ -112,14 +114,21 @@ async def generate_stream(
     provider = settings.llm_provider
     model = settings.llm_model
 
-    # Auto-upgrade provider to a cloud API if Ollama is selected but cloud keys are available
-    if provider == "ollama":
+    # Auto-upgrade provider to a cloud API if Ollama is configured but disabled/cloud keys are available
+    if provider == "ollama" and (settings.disable_ollama or settings.gemini_api_key or settings.openai_api_key or settings.groq_api_key):
         if settings.gemini_api_key:
             provider = "gemini"
         elif settings.openai_api_key:
             provider = "openai"
         elif settings.groq_api_key:
             provider = "groq"
+
+    # Groq does NOT support vision/image inputs — if images are present, upgrade to a vision-capable provider
+    if images and provider == "groq":
+        if settings.gemini_api_key:
+            provider = "gemini"
+        elif settings.openai_api_key:
+            provider = "openai"
 
     # Generate a stable cache key
     image_hashes = []
@@ -189,7 +198,7 @@ async def generate_stream(
         if p == "groq":
             return bool(settings.groq_api_key)
         if p == "ollama":
-            return True
+            return not settings.disable_ollama
         return False
 
     # 1. Try the user-configured provider first
@@ -205,7 +214,8 @@ async def generate_stream(
 
     # 2. If the configured provider failed or wasn't configured, fall back in priority order:
     if not success:
-        fallback_order = ["gemini", "openai", "groq", "ollama"]
+        # Groq doesn't support vision — exclude it from fallback when images are present
+        fallback_order = ["gemini", "openai", "groq", "ollama"] if not images else ["gemini", "openai", "ollama"]
         for p in fallback_order:
             if p == provider:  # already tried
                 continue
@@ -229,7 +239,7 @@ async def generate_stream(
                 await set_cached_val(cache_key, full_response)
             except Exception as cache_err:
                 print(f"Error saving LLM generation cache: {cache_err}")
-    else:
+    elif not settings.disable_ollama:
         # Extreme fallback to local Ollama if all configurations and fallbacks failed
         try:
             print("Extreme fallback to local Ollama")
@@ -246,6 +256,9 @@ async def generate_stream(
         except Exception as ollama_err:
             print(f"All LLM generation paths (including Ollama) failed: {ollama_err}")
             yield f"Error: All LLM generation paths failed. Details: {ollama_err}"
+    else:
+        print("All LLM generation paths failed (Ollama fallback is disabled)")
+        yield "Error: All cloud LLM generation paths failed, and local Ollama fallback is disabled."
 
 
 async def _generate_groq(
@@ -426,23 +439,86 @@ async def _caption_image(image_base64: str) -> str:
             print(f"[_caption_image] Tesseract OCR failed: {e}")
 
         caption = ""
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{settings.ollama_url}/api/generate",
-                    json={
-                        "model": settings.vision_model,
-                        "prompt": "Describe this image briefly. What type of document or scene is it?",
-                        "images": [image_base64],
-                        "stream": False,
-                        "options": {"num_predict": 80, "temperature": 0.1},
-                    },
-                )
-                response.raise_for_status()
-                caption = response.json().get("response", "")
-                print(f"[_caption_image] Vision caption: {caption[:100]}")
-        except Exception as e:
-            print(f"[_caption_image] Vision model failed: {e}")
+        if settings.disable_ollama:
+            if settings.gemini_api_key:
+                try:
+                    print("[_caption_image] Using Gemini Vision for captioning")
+                    model = settings.llm_model if "gemini" in settings.llm_model else "gemini-2.0-flash"
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.gemini_api_key}"
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        payload = {
+                            "contents": [{
+                                "parts": [
+                                    {"text": "Describe this image briefly. What type of document or scene is it?"},
+                                    {
+                                        "inlineData": {
+                                            "mimeType": "image/jpeg",
+                                            "data": image_base64
+                                        }
+                                    }
+                                ]
+                            }]
+                        }
+                        resp = await client.post(url, json=payload)
+                        resp.raise_for_status()
+                        caption = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        print(f"[_caption_image] Gemini caption: {caption[:100]}")
+                except Exception as e:
+                    print(f"[_caption_image] Gemini Vision captioning failed: {e}")
+
+            if not caption and settings.openai_api_key:
+                try:
+                    print("[_caption_image] Using OpenAI Vision for captioning")
+                    model = settings.llm_model if settings.llm_model.startswith(("gpt-", "o1-")) else "gpt-4o-mini"
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        resp = await client.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {settings.openai_api_key}",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "model": model,
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": "Describe this image briefly. What type of document or scene is it?"},
+                                            {
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": f"data:image/jpeg;base64,{image_base64}"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "max_tokens": 150,
+                            }
+                        )
+                        resp.raise_for_status()
+                        caption = resp.json()["choices"][0]["message"]["content"].strip()
+                        print(f"[_caption_image] OpenAI caption: {caption[:100]}")
+                except Exception as e:
+                    print(f"[_caption_image] OpenAI Vision captioning failed: {e}")
+        else:
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        f"{settings.ollama_url}/api/generate",
+                        json={
+                            "model": settings.vision_model,
+                            "prompt": "Describe this image briefly. What type of document or scene is it?",
+                            "images": [image_base64],
+                            "stream": False,
+                            "options": {"num_predict": 80, "temperature": 0.1},
+                        },
+                    )
+                    response.raise_for_status()
+                    caption = response.json().get("response", "")
+                    print(f"[_caption_image] Vision caption: {caption[:100]}")
+            except Exception as e:
+                print(f"[_caption_image] Vision model failed: {e}")
 
         parts = []
         if ocr_text.strip():
@@ -616,7 +692,7 @@ async def should_search_web(query: str) -> bool:
 
     # Try providers in fallback order
     provider = settings.llm_provider
-    if provider == "ollama":
+    if provider == "ollama" or settings.disable_ollama:
         if settings.gemini_api_key:
             provider = "gemini"
         elif settings.openai_api_key:
@@ -628,7 +704,7 @@ async def should_search_web(query: str) -> bool:
         ("gemini", _route_gemini, bool(settings.gemini_api_key)),
         ("openai", _route_openai, bool(settings.openai_api_key)),
         ("groq", _route_groq, bool(settings.groq_api_key)),
-        ("ollama", _route_ollama, True),
+        ("ollama", _route_ollama, not settings.disable_ollama),
     ]
 
     # Reorder to try selected provider first
